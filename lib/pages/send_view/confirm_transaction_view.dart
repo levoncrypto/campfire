@@ -46,6 +46,7 @@ import '../../wallets/wallet/impl/mimblewimblecoin_wallet.dart';
 import '../../wallets/wallet/impl/solana_wallet.dart';
 import '../../wallets/wallet/wallet_mixin_interfaces/paynym_interface.dart';
 import '../masternodes/create_masternode_view.dart';
+import '../../widgets/dialogs/s_dialog.dart';
 import '../../widgets/background.dart';
 import '../../widgets/conditional_parent.dart';
 import '../../widgets/custom_buttons/app_bar_icon_button.dart';
@@ -561,8 +562,25 @@ class _ConfirmTransactionViewState
                 navigator.popUntil(
                   ModalRoute.withName(routeOnSuccessName),
                 );
-                unawaited(
-                  navigator.pushNamed(
+                final dialogContext = navigator.context;
+                if (!dialogContext.mounted) {
+                  return;
+                }
+                if (Util.isDesktop) {
+                  await showDialog<Object>(
+                    context: dialogContext,
+                    barrierDismissible: true,
+                    builder: (ctx) => SDialog(
+                      child: CreateMasternodeView(
+                        firoWalletId: walletId,
+                        collateralTxid: confirmedTx.txid!,
+                        collateralVout: collateralVout,
+                        collateralAddress: mnRecipient.address,
+                      ),
+                    ),
+                  );
+                } else {
+                  await navigator.pushNamed(
                     CreateMasternodeView.routeName,
                     arguments: {
                       'walletId': walletId,
@@ -570,8 +588,8 @@ class _ConfirmTransactionViewState
                       'collateralVout': collateralVout,
                       'collateralAddress': mnRecipient.address,
                     },
-                  ),
-                );
+                  );
+                }
               }
             }
           } else if (mnRecipient != null &&

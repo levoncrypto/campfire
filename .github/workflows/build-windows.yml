@@ -14,9 +14,11 @@ jobs:
           repository: cypherstack/stack_wallet
           ref: staging
           fetch-depth: 0
+          path: stack_wallet
 
       - name: Merge PR 1295 and PR 1296
         shell: bash
+        working-directory: stack_wallet
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -31,15 +33,25 @@ jobs:
         with:
           flutter-version: "3.38.5"
 
+      - name: Verify pubspec
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path stack_wallet -Name
+          if (!(Test-Path "stack_wallet/pubspec.yaml")) { throw "pubspec.yaml not found" }
+
       - name: Flutter pub get
+        shell: pwsh
+        working-directory: stack_wallet
         run: flutter pub get
 
       - name: Build Windows release
+        shell: pwsh
+        working-directory: stack_wallet
         run: flutter build windows --release
 
       - name: Zip release
         shell: pwsh
-        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath windows_build.zip
+        run: Compress-Archive -Path stack_wallet/build/windows/x64/runner/Release/* -DestinationPath windows_build.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

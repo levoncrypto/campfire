@@ -31,11 +31,13 @@ jobs:
         with:
           flutter-version: "3.38.5"
 
-      - name: Verify pubspec
-        shell: pwsh
+      - name: Ensure pubspec.yaml exists
+        shell: bash
         run: |
-          Get-ChildItem -Name
-          if (!(Test-Path "pubspec.yaml")) { throw "pubspec.yaml not found" }
+          if [ ! -f pubspec.yaml ]; then
+            cp scripts/app_config/templates/pubspec.template.yaml pubspec.yaml
+          fi
+          ls -la pubspec.yaml
 
       - name: Flutter pub get
         run: flutter pub get

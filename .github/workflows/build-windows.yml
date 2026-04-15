@@ -52,8 +52,9 @@ jobs:
             pubspec.yaml \
             MWC XMR WOW SAL TOR EPIC FIRO XEL FROST
 
-          if grep -q "flutter_mwebd" pubspec.yaml; then
-            echo "flutter_mwebd still enabled"
+          # Fail only if flutter_mwebd is uncommented and active
+          if grep -Eq '^[[:space:]]*flutter_mwebd:' pubspec.yaml; then
+            echo "flutter_mwebd is enabled"
             exit 1
           fi
 

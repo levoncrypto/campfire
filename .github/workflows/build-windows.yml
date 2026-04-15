@@ -60,6 +60,18 @@ jobs:
           flutter config --enable-windows-desktop
           flutter create --platforms=windows .
 
+      - name: Build secp256k1.dll (Windows)
+        shell: cmd
+        run: |
+          cd scripts\windows
+          if exist build\secp256k1 rmdir /s /q build\secp256k1
+          call build_secp256k1.bat
+          cd ..\..
+          if not exist build\secp256k1.dll (
+            echo secp256k1.dll was not produced
+            exit /b 1
+          )
+
       - name: Build Windows release
         run: flutter build windows --release
 

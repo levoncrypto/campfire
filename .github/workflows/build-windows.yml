@@ -61,16 +61,23 @@ jobs:
           flutter create --platforms=windows .
 
       - name: Build secp256k1.dll (Windows)
-        shell: cmd
+        shell: pwsh
         run: |
-          cd scripts\windows
-          if exist build\secp256k1 rmdir /s /q build\secp256k1
-          call build_secp256k1.bat
-          cd ..\..
-          if not exist build\secp256k1.dll (
-            echo secp256k1.dll was not produced
-            exit /b 1
-          )
+          cmd /c "cd scripts\windows && build_secp256k1.bat"
+
+          $dll = Get-ChildItem -Path "scripts/windows/build/secp256k1" -Recurse -Filter "libsecp256k1-2.dll" | Select-Object -First 1
+          if (-not $dll) {
+            throw "libsecp256k1-2.dll not found after build"
+          }
+
+          New-Item -ItemType Directory -Force -Path "build" | Out-Null
+          Copy-Item $dll.FullName "build/secp256k1.dll" -Force
+
+          if (-not (Test-Path "build/secp256k1.dll")) {
+            throw "secp256k1.dll copy failed"
+          }
+
+          Write-Host "secp256k1.dll prepared at build/secp256k1.dll"
 
       - name: Build Windows release
         run: flutter build windows --release

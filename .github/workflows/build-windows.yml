@@ -38,7 +38,7 @@ jobs:
           git submodule sync --recursive
           git submodule update --init --recursive
 
-      - name: Generate pubspec.yaml for Stack Wallet
+      - name: Generate pubspec.yaml for Stack Wallet (without MWEBD)
         shell: bash
         run: |
           cp scripts/app_config/templates/pubspec.template.yaml pubspec.yaml
@@ -47,9 +47,15 @@ jobs:
           sed -i 's/PLACEHOLDER_V/2.1.0/g' pubspec.yaml
           sed -i 's/PLACEHOLDER_B/12951296/g' pubspec.yaml
 
+          # Intentionally exclude MWEBD to avoid flutter_mwebd Windows CI blocker
           dart tool/process_pubspec_deps.dart \
             pubspec.yaml \
-            MWC MWEBD XMR WOW SAL TOR EPIC FIRO XEL FROST
+            MWC XMR WOW SAL TOR EPIC FIRO XEL FROST
+
+          if grep -q "flutter_mwebd" pubspec.yaml; then
+            echo "flutter_mwebd still enabled"
+            exit 1
+          fi
 
       - name: Flutter pub get
         run: flutter pub get

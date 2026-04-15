@@ -31,13 +31,21 @@ jobs:
         with:
           flutter-version: "3.38.5"
 
-      - name: Ensure pubspec.yaml exists
+      - name: Generate pubspec.yaml for Stack Wallet
         shell: bash
         run: |
-          if [ ! -f pubspec.yaml ]; then
-            cp scripts/app_config/templates/pubspec.template.yaml pubspec.yaml
-          fi
-          ls -la pubspec.yaml
+          cp scripts/app_config/templates/pubspec.template.yaml pubspec.yaml
+          sed -i 's/^name: PLACEHOLDER/name: stackwallet/' pubspec.yaml
+          sed -i 's/^description: PLACEHOLDER/description: Stack Wallet/' pubspec.yaml
+          sed -i 's/PLACEHOLDER_V/2.1.0/g' pubspec.yaml
+          sed -i 's/PLACEHOLDER_B/12951296/g' pubspec.yaml
+
+          dart tool/process_pubspec_deps.dart \
+            pubspec.yaml \
+            MWC MWEBD XMR WOW SAL TOR EPIC FIRO XEL FROST
+
+          echo "----- pubspec.yaml (head) -----"
+          head -n 40 pubspec.yaml
 
       - name: Flutter pub get
         run: flutter pub get

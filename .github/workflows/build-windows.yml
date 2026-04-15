@@ -71,7 +71,7 @@ jobs:
           test -f lib/app_config.g.dart
           test -f lib/external_api_keys.dart
           test -f lib/wl_gen/generated/tor_service_impl.dart
-          test -f lib/wl_gen/generated/spark_interface_impl.dart
+          test -f lib/wl_gen/generated/lib_spark_interface_impl.dart
           test -f lib/wl_gen/generated/mwebd_server_interface_impl.dart
           head -n 30 pubspec.yaml
 

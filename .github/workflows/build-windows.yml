@@ -8,47 +8,38 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout selected commit
+      - name: Checkout upstream staging
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          repository: cypherstack/stack_wallet
+          ref: staging
           fetch-depth: 0
+
+      - name: Merge PR 1295 and PR 1296
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin pull/1295/head:pr-1295
+          git fetch origin pull/1296/head:pr-1296
+          git checkout -b build/pr1295-pr1296
+          git merge --no-ff --no-edit pr-1295
+          git merge --no-ff --no-edit pr-1296
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.38.5"
 
-      - name: Detect project root
-        id: root
-        shell: pwsh
-        run: |
-          if (Test-Path "pubspec.yaml") {
-            "dir=." | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          } elseif (Test-Path "stack_wallet/pubspec.yaml") {
-            "dir=stack_wallet" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          } else {
-            Write-Error "pubspec.yaml not found in repo root or stack_wallet/"
-            Get-ChildItem -Force
-            exit 1
-          }
-
       - name: Flutter pub get
-        shell: pwsh
         run: flutter pub get
-        working-directory: ${{ steps.root.outputs.dir }}
 
       - name: Build Windows release
-        shell: pwsh
         run: flutter build windows --release
-        working-directory: ${{ steps.root.outputs.dir }}
 
       - name: Zip release
         shell: pwsh
-        run: |
-          Compress-Archive `
-            -Path "${{ steps.root.outputs.dir }}/build/windows/x64/runner/Release/*" `
-            -DestinationPath "windows_build.zip"
+        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath windows_build.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

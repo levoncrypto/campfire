@@ -23,7 +23,13 @@ abstract class FiroCacheCoordinator {
     }
   }
 
-  static Future<void> clearSharedCache(CryptoCurrencyNetwork network) async {
+  static Future<void> clearSharedCache(
+    CryptoCurrencyNetwork network, {
+    bool clearOnlyUsedTagsCache = false,
+  }) async {
+    if (clearOnlyUsedTagsCache) {
+      return await _FiroCache._deleteUsedTagsCache(network);
+    }
     return await _FiroCache._deleteAllCache(network);
   }
 
@@ -38,9 +44,10 @@ abstract class FiroCacheCoordinator {
 
     final setSize =
         (await setCacheFile.exists()) ? await setCacheFile.length() : 0;
-    final tagsSize = (await usedTagsCacheFile.exists())
-        ? await usedTagsCacheFile.length()
-        : 0;
+    final tagsSize =
+        (await usedTagsCacheFile.exists())
+            ? await usedTagsCacheFile.length()
+            : 0;
 
     Logging.instance.d("Spark cache used tags size: $tagsSize");
     Logging.instance.d("Spark cache anon set size: $setSize");
@@ -67,16 +74,11 @@ abstract class FiroCacheCoordinator {
   ) async {
     await _tagLocks[network]!.protect(() async {
       final count = await FiroCacheCoordinator.getUsedCoinTagsCount(network);
-      final unhashedTags =
-          await client.getSparkUnhashedUsedCoinsTagsWithTxHashes(
-        startNumber: count,
-      );
+      final unhashedTags = await client
+          .getSparkUnhashedUsedCoinsTagsWithTxHashes(startNumber: count);
       if (unhashedTags.isNotEmpty) {
         await _workers[network]!.runTask(
-          FCTask(
-            func: FCFuncName._updateSparkUsedTagsWith,
-            data: unhashedTags,
-          ),
+          FCTask(func: FCFuncName._updateSparkUsedTagsWith, data: unhashedTags),
         );
       }
     });
@@ -98,57 +100,121 @@ abstract class FiroCacheCoordinator {
 
       final prevSize = prevMeta?.size ?? 0;
 
-      final meta = await client.getSparkAnonymitySetMeta(
-        coinGroupId: groupId,
-      );
+      final meta = await client.getSparkAnonymitySetMeta(coinGroupId: groupId);
 
       progressUpdated?.call(prevSize, meta.size);
 
-      if (prevMeta?.blockHash == meta.blockHash) {
-        Logging.instance.d("prevMeta?.blockHash == meta.blockHash");
+      if (prevMeta?.blockHash == meta.blockHash &&
+          prevMeta!.size >= meta.size) {
+        Logging.instance.d(
+          "prevMeta matches meta blockHash and size >= meta.size, "
+          "already up to date",
+        );
         return;
       }
 
-      final numberOfCoinsToFetch = meta.size - prevSize;
+      // When resuming a partial download of the SAME block, we can skip
+      // already-saved coins because the index space hasn't shifted.
+      //
+      // When the block changes, we check the `complete` flag on the
+      // previous SparkSet to determine if the old download finished.
+      // - Complete: use the delta (meta.size - prevSize) from index 0.
+      //   The newest coins in the new block are at the lowest indices.
+      // - Partial: indices have shifted due to the new block, so we
+      //   can't reliably compute which coins are missing. Re-download
+      //   the full set from index 0. INSERT OR IGNORE handles overlap.
+      final bool sameBlock = prevMeta?.blockHash == meta.blockHash;
+
+      final int numberOfCoinsToFetch;
+      final int indexOffset;
+
+      if (sameBlock) {
+        // Same block: resume from where we left off.
+        numberOfCoinsToFetch = meta.size - prevSize;
+        indexOffset = prevSize;
+      } else if (prevMeta != null && prevMeta.complete) {
+        // Different block, but previous download was complete.
+        // The delta coins are at indices 0..(meta.size - prevSize - 1).
+        numberOfCoinsToFetch = meta.size - prevSize;
+        indexOffset = 0;
+      } else {
+        // Different block and previous download was partial (or no
+        // previous data). Must re-download the full set.
+        numberOfCoinsToFetch = meta.size;
+        indexOffset = 0;
+      }
+
+      if (numberOfCoinsToFetch <= 0) {
+        // Edge case: reorg, stale cache, or already up to date.
+        return;
+      }
 
       final fullSectorCount = numberOfCoinsToFetch ~/ sectorSize;
       final remainder = numberOfCoinsToFetch % sectorSize;
 
-      final List<dynamic> coins = [];
+      int coinsSaved = 0;
 
       for (int i = 0; i < fullSectorCount; i++) {
-        final start = (i * sectorSize);
+        final start = indexOffset + (i * sectorSize);
         final data = await client.getSparkAnonymitySetBySector(
           coinGroupId: groupId,
           latestBlock: meta.blockHash,
           startIndex: start,
           endIndex: start + sectorSize,
         );
-        progressUpdated?.call(start + sectorSize, numberOfCoinsToFetch);
 
-        coins.addAll(data);
+        final sectorCoins =
+            data
+                .map((e) => RawSparkCoin.fromRPCResponse(e as List, groupId))
+                .toList();
+
+        coinsSaved += sectorCoins.length;
+
+        await _workers[network]!.runTask(
+          FCTask(
+            func: FCFuncName._insertSparkAnonSetCoinsIncremental,
+            data: (meta, sectorCoins, indexOffset + coinsSaved),
+          ),
+        );
+
+        progressUpdated?.call(
+          indexOffset + (i + 1) * sectorSize,
+          meta.size,
+        );
       }
 
       if (remainder > 0) {
+        final remainderStart = indexOffset + numberOfCoinsToFetch - remainder;
         final data = await client.getSparkAnonymitySetBySector(
           coinGroupId: groupId,
           latestBlock: meta.blockHash,
-          startIndex: numberOfCoinsToFetch - remainder,
-          endIndex: numberOfCoinsToFetch,
+          startIndex: remainderStart,
+          endIndex: indexOffset + numberOfCoinsToFetch,
         );
-        progressUpdated?.call(numberOfCoinsToFetch, numberOfCoinsToFetch);
 
-        coins.addAll(data);
+        final sectorCoins =
+            data
+                .map((e) => RawSparkCoin.fromRPCResponse(e as List, groupId))
+                .toList();
+
+        coinsSaved += sectorCoins.length;
+
+        await _workers[network]!.runTask(
+          FCTask(
+            func: FCFuncName._insertSparkAnonSetCoinsIncremental,
+            data: (meta, sectorCoins, indexOffset + coinsSaved),
+          ),
+        );
+
+        progressUpdated?.call(meta.size, meta.size);
       }
 
-      final result = coins
-          .map((e) => RawSparkCoin.fromRPCResponse(e as List, groupId))
-          .toList();
-
+      // Mark this SparkSet as complete so cross-block resume knows
+      // the download finished and can safely use the delta approach.
       await _workers[network]!.runTask(
         FCTask(
-          func: FCFuncName._updateSparkAnonSetCoinsWith,
-          data: (meta, result),
+          func: FCFuncName._markSparkAnonSetComplete,
+          data: meta,
         ),
       );
     });
@@ -156,7 +222,7 @@ abstract class FiroCacheCoordinator {
 
   // ===========================================================================
 
-  static Future<Set<String>> getUsedCoinTags(
+  static Future<List<String>> getUsedCoinTags(
     int startNumber,
     CryptoCurrencyNetwork network,
   ) async {
@@ -164,12 +230,10 @@ abstract class FiroCacheCoordinator {
       startNumber,
       db: _FiroCache.usedTagsCacheDB(network),
     );
-    return result.map((e) => e["tag"] as String).toSet();
+    return result.map((e) => e["tag"] as String).toList();
   }
 
-  static Future<int> getUsedCoinTagsCount(
-    CryptoCurrencyNetwork network,
-  ) async {
+  static Future<int> getUsedCoinTagsCount(CryptoCurrencyNetwork network) async {
     final result = await _Reader._getUsedCoinTagsCount(
       db: _FiroCache.usedTagsCacheDB(network),
     );
@@ -195,16 +259,11 @@ abstract class FiroCacheCoordinator {
       return [];
     }
     return result.rows
-        .map(
-          (e) => (
-            tag: e[0] as String,
-            txid: e[1] as String,
-          ),
-        )
+        .map((e) => (tag: e[0] as String, txid: e[1] as String))
         .toList();
   }
 
-  static Future<Set<String>> getUsedCoinTagsFor({
+  static Future<List<String>> getUsedCoinTagsFor({
     required String txid,
     required CryptoCurrencyNetwork network,
   }) async {
@@ -212,7 +271,7 @@ abstract class FiroCacheCoordinator {
       txid,
       db: _FiroCache.usedTagsCacheDB(network),
     );
-    return result.map((e) => e["tag"] as String).toSet();
+    return result.map((e) => e["tag"] as String).toList();
   }
 
   static Future<bool> checkTagIsUsed(
@@ -230,16 +289,17 @@ abstract class FiroCacheCoordinator {
     String? afterBlockHash,
     required CryptoCurrencyNetwork network,
   }) async {
-    final resultSet = afterBlockHash == null
-        ? await _Reader._getSetCoinsForGroupId(
-            groupId,
-            db: _FiroCache.setCacheDB(network),
-          )
-        : await _Reader._getSetCoinsForGroupIdAndBlockHash(
-            groupId,
-            afterBlockHash,
-            db: _FiroCache.setCacheDB(network),
-          );
+    final resultSet =
+        afterBlockHash == null
+            ? await _Reader._getSetCoinsForGroupId(
+              groupId,
+              db: _FiroCache.setCacheDB(network),
+            )
+            : await _Reader._getSetCoinsForGroupIdAndBlockHash(
+              groupId,
+              afterBlockHash,
+              db: _FiroCache.setCacheDB(network),
+            );
 
     return resultSet
         .map(
@@ -273,6 +333,7 @@ abstract class FiroCacheCoordinator {
       blockHash: result.first["blockHash"] as String,
       setHash: result.first["setHash"] as String,
       size: result.first["size"] as int,
+      complete: (result.first["complete"] as int) == 1,
     );
   }
 

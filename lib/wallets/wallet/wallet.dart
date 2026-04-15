@@ -1,12 +1,13 @@
 import 'dart:async';
 
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:meta/meta.dart';
 import 'package:mutex/mutex.dart';
 
 import '../../db/isar/main_db.dart';
 import '../../models/isar/models/blockchain_data/address.dart';
 import '../../models/isar/models/ethereum/eth_contract.dart';
+import '../../models/isar/models/solana/sol_contract.dart';
 import '../../models/keys/view_only_wallet_data.dart';
 import '../../models/node_model.dart';
 import '../../models/paymint/fee_object_model.dart';
@@ -38,6 +39,7 @@ import 'impl/ethereum_wallet.dart';
 import 'impl/fact0rn_wallet.dart';
 import 'impl/firo_wallet.dart';
 import 'impl/litecoin_wallet.dart';
+import 'impl/mimblewimblecoin_wallet.dart';
 import 'impl/monero_wallet.dart';
 import 'impl/namecoin_wallet.dart';
 import 'impl/nano_wallet.dart';
@@ -47,6 +49,7 @@ import 'impl/salvium_wallet.dart';
 import 'impl/solana_wallet.dart';
 import 'impl/stellar_wallet.dart';
 import 'impl/sub_wallets/eth_token_wallet.dart';
+import 'impl/sub_wallets/solana_token_wallet.dart';
 import 'impl/tezos_wallet.dart';
 import 'impl/wownero_wallet.dart';
 import 'impl/xelis_wallet.dart';
@@ -225,6 +228,13 @@ abstract class Wallet<T extends CryptoCurrency> {
       await wallet.mainDB.isar.walletInfo.put(walletInfo);
     });
 
+    if (wallet is SparkInterface) {
+      await walletInfo.updateOtherData(
+        newEntries: {WalletInfoKeys.firoSparkUsedTagsCacheResetVersion: 1},
+        isar: mainDB.isar,
+      );
+    }
+
     return wallet;
   }
 
@@ -236,11 +246,10 @@ abstract class Wallet<T extends CryptoCurrency> {
     required NodeService nodeService,
     required Prefs prefs,
   }) async {
-    final walletInfo =
-        await mainDB.isar.walletInfo
-            .where()
-            .walletIdEqualTo(walletId)
-            .findFirst();
+    final walletInfo = await mainDB.isar.walletInfo
+        .where()
+        .walletIdEqualTo(walletId)
+        .findFirst();
 
     Logging.instance.i(
       "Wallet.load loading"
@@ -277,6 +286,20 @@ abstract class Wallet<T extends CryptoCurrency> {
     wallet.mainDB = ethWallet.mainDB;
 
     return wallet.._walletId = ethWallet.info.walletId;
+  }
+
+  static Wallet loadSolTokenWallet({
+    required SolanaWallet solWallet,
+    required SolContract contract,
+  }) {
+    final Wallet wallet = SolanaTokenWallet(solWallet, contract);
+
+    wallet.prefs = solWallet.prefs;
+    wallet.nodeService = solWallet.nodeService;
+    wallet.secureStorageInterface = solWallet.secureStorageInterface;
+    wallet.mainDB = solWallet.mainDB;
+
+    return wallet.._walletId = solWallet.info.walletId;
   }
 
   //============================================================================
@@ -355,6 +378,9 @@ abstract class Wallet<T extends CryptoCurrency> {
       case const (Epiccash):
         return EpiccashWallet(net);
 
+      case const (Mimblewimblecoin):
+        return MimblewimblecoinWallet(net);
+
       case const (Ethereum):
         return EthereumWallet(net);
 
@@ -427,10 +453,9 @@ abstract class Wallet<T extends CryptoCurrency> {
     final bool hasNetwork = await pingCheck();
 
     if (_isConnected != hasNetwork) {
-      final NodeConnectionStatus status =
-          hasNetwork
-              ? NodeConnectionStatus.connected
-              : NodeConnectionStatus.disconnected;
+      final NodeConnectionStatus status = hasNetwork
+          ? NodeConnectionStatus.connected
+          : NodeConnectionStatus.disconnected;
       if (!doNotFireRefreshEvents) {
         GlobalEventBus.instance.fire(
           NodeConnectionStatusChangedEvent(status, walletId, cryptoCurrency),
@@ -616,95 +641,105 @@ abstract class Wallet<T extends CryptoCurrency> {
         );
       }
 
-      // add some small buffer before making calls.
-      // this can probably be removed in the future but was added as a
-      // debugging feature
-      await Future<void>.delayed(const Duration(milliseconds: 300));
+      await Future<void>(() async {
+        // add some small buffer before making calls.
+        // this can probably be removed in the future but was added as a
+        // debugging feature
+        await Future<void>.delayed(const Duration(milliseconds: 300));
 
-      // TODO: [prio=low] handle this differently. Extra modification of this file for coin specific functionality should be avoided.
-      final Set<String> codesToCheck = {};
-      if (this is PaynymInterface && !viewOnly) {
-        // isSegwit does not matter here at all
-        final myCode = await (this as PaynymInterface).getPaymentCode(
-          isSegwit: false,
-        );
+        // TODO: [prio=low] handle this differently. Extra modification of this file for coin specific functionality should be avoided.
+        final Set<String> codesToCheck = {};
+        if (this is PaynymInterface && !viewOnly) {
+          // isSegwit does not matter here at all
+          final myCode = await (this as PaynymInterface).getPaymentCode(
+            isSegwit: false,
+          );
 
-        final nym = await PaynymIsApi().nym(myCode.toString());
-        if (nym.value != null) {
-          for (final follower in nym.value!.followers) {
-            codesToCheck.add(follower.code);
+          final nym = await PaynymIsApi().nym(myCode.toString());
+          if (nym.value != null) {
+            for (final follower in nym.value!.followers) {
+              codesToCheck.add(follower.code);
+            }
+            for (final following in nym.value!.following) {
+              codesToCheck.add(following.code);
+            }
           }
-          for (final following in nym.value!.following) {
-            codesToCheck.add(following.code);
+        }
+
+        _fireRefreshPercentChange(0);
+        await updateChainHeight();
+
+        if (this is BitcoinFrostWallet) {
+          await (this as BitcoinFrostWallet).lookAhead();
+        }
+
+        _fireRefreshPercentChange(0.1);
+
+        // TODO: [prio=low] handle this differently. Extra modification of this file for coin specific functionality should be avoided.
+        if (this is MultiAddressInterface) {
+          if (info.otherData[WalletInfoKeys.reuseAddress] != true) {
+            await (this as MultiAddressInterface)
+                .checkReceivingAddressForTransactions();
           }
         }
-      }
 
-      _fireRefreshPercentChange(0);
-      await updateChainHeight();
+        _fireRefreshPercentChange(0.2);
 
-      if (this is BitcoinFrostWallet) {
-        await (this as BitcoinFrostWallet).lookAhead();
-      }
-
-      _fireRefreshPercentChange(0.1);
-
-      // TODO: [prio=low] handle this differently. Extra modification of this file for coin specific functionality should be avoided.
-      if (this is MultiAddressInterface) {
-        if (info.otherData[WalletInfoKeys.reuseAddress] != true) {
-          await (this as MultiAddressInterface)
-              .checkReceivingAddressForTransactions();
+        // TODO: [prio=low] handle this differently. Extra modification of this file for coin specific functionality should be avoided.
+        if (this is MultiAddressInterface) {
+          if (info.otherData[WalletInfoKeys.reuseAddress] != true) {
+            await (this as MultiAddressInterface)
+                .checkChangeAddressForTransactions();
+          }
         }
-      }
-
-      _fireRefreshPercentChange(0.2);
-
-      // TODO: [prio=low] handle this differently. Extra modification of this file for coin specific functionality should be avoided.
-      if (this is MultiAddressInterface) {
-        if (info.otherData[WalletInfoKeys.reuseAddress] != true) {
-          await (this as MultiAddressInterface)
-              .checkChangeAddressForTransactions();
+        _fireRefreshPercentChange(0.3);
+        if (this is SparkInterface && !viewOnly) {
+          // this should be called before updateTransactions()
+          await (this as SparkInterface).refreshSparkData((0.3, 0.6));
         }
-      }
-      _fireRefreshPercentChange(0.3);
-      if (this is SparkInterface && !viewOnly) {
-        // this should be called before updateTransactions()
-        await (this as SparkInterface).refreshSparkData((0.3, 0.6));
-      }
 
-      if (this is NamecoinWallet) {
-        await updateUTXOs();
-        _fireRefreshPercentChange(0.6);
-        await (this as NamecoinWallet).checkAutoRegisterNameNewOutputs();
-        _fireRefreshPercentChange(0.70);
-        await updateTransactions();
-      } else {
-        final fetchFuture = updateTransactions();
-        _fireRefreshPercentChange(0.6);
-        final utxosRefreshFuture = updateUTXOs();
-        _fireRefreshPercentChange(0.65);
-        await utxosRefreshFuture;
-        _fireRefreshPercentChange(0.70);
-        await fetchFuture;
-      }
+        if (this is NamecoinWallet) {
+          await updateUTXOs();
+          _fireRefreshPercentChange(0.6);
+          await (this as NamecoinWallet).checkAutoRegisterNameNewOutputs();
+          _fireRefreshPercentChange(0.70);
+          await updateTransactions();
+        } else {
+          final fetchFuture = updateTransactions();
+          _fireRefreshPercentChange(0.6);
+          final utxosRefreshFuture = updateUTXOs();
+          await utxosRefreshFuture;
+          _fireRefreshPercentChange(0.65);
+          await fetchFuture;
+          _fireRefreshPercentChange(0.70);
+        }
 
-      // TODO: [prio=low] handle this differently. Extra modification of this file for coin specific functionality should be avoided.
-      if (!viewOnly && this is PaynymInterface && codesToCheck.isNotEmpty) {
-        await (this as PaynymInterface).checkForNotificationTransactionsTo(
-          codesToCheck,
-        );
-        // check utxos again for notification outputs
-        await updateUTXOs();
-      }
-      _fireRefreshPercentChange(0.80);
+        // TODO: [prio=low] handle this differently. Extra modification of this file for coin specific functionality should be avoided.
+        if (!viewOnly && this is PaynymInterface && codesToCheck.isNotEmpty) {
+          await (this as PaynymInterface).checkForNotificationTransactionsTo(
+            codesToCheck,
+          );
+          // check utxos again for notification outputs
+          await updateUTXOs();
+        }
+        _fireRefreshPercentChange(0.80);
 
-      // await getAllTxsToWatch();
+        // await getAllTxsToWatch();
 
-      _fireRefreshPercentChange(0.90);
+        _fireRefreshPercentChange(0.90);
 
-      await updateBalance();
+        await updateBalance();
 
-      _fireRefreshPercentChange(1.0);
+        _fireRefreshPercentChange(1.0);
+      }).timeout(
+        const Duration(minutes: 5),
+        onTimeout: () {
+          throw TimeoutException(
+            'Wallet refresh timed out for $walletId',
+            const Duration(minutes: 5),
+          );
+        },
+      );
 
       completer.complete();
     } catch (error, strace) {
@@ -745,11 +780,10 @@ abstract class Wallet<T extends CryptoCurrency> {
           // Check if there's another wallet of this coin on the sync list.
           final List<String> walletIds = [];
           for (final id in prefs.walletIdsSyncOnStartup) {
-            final wallet =
-                mainDB.isar.walletInfo
-                    .where()
-                    .walletIdEqualTo(id)
-                    .findFirstSync()!;
+            final wallet = mainDB.isar.walletInfo
+                .where()
+                .walletIdEqualTo(id)
+                .findFirstSync()!;
 
             if (wallet.coin == cryptoCurrency) {
               walletIds.add(id);

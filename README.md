@@ -11,6 +11,32 @@ Campfire is a fork of Stack wallet, a multi-currency wallet developed by [Cypher
 ## Feature List
 
 Highlights include:
+- 23 Different cryptocurrencies:
+    - [Bitcoin](https://bitcoin.org/en/)
+    - Bitcoin Frost
+    - [Bitcoin Cash](https://bch.info/en/)
+    - [Banano](https://banano.cc/)
+    - [Cardano](https://cardano.org/)
+    - [Dash](https://www.dash.org/)
+    - [Dogecoin](https://dogecoin.com/)
+    - [Epic Cash](https://linktr.ee/epiccash)
+    - [MimbleWimbleCoin](https://mwc.mw)
+    - [Ethereum](https://ethereum.org/en/)
+    - [Ecash](https://e.cash/)
+    - [Fact0rn](https://www.fact0rn.io/)
+    - [Firo](https://firo.org/)
+    - [Litecoin](https://litecoin.org/)
+    - [Monero](https://www.getmonero.org/)
+    - [Nano](https://nano.org/)
+    - [Namecoin](https://www.namecoin.org/)
+    - [Particl](https://particl.io/)
+    - [Peercoin](https://www.peercoin.net/)
+    - [Salvium](https://salvium.io/)
+    - [Solana](https://solana.com/)
+    - [Stellar](https://stellar.org/)
+    - [Tezos](https://tezos.com/)
+    - [Wownero](https://wownero.org/)
+    - [Xelis](https://xelis.org/)
 - Full Lelantus Spark support
 - EX address support
 - Masternode collateral recognition

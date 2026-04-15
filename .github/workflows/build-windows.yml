@@ -27,19 +27,16 @@ jobs:
           git merge --no-ff --no-edit pr-1295
           git merge --no-ff --no-edit pr-1296
 
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.38.5"
+
       - name: Init submodules
         shell: bash
         run: |
           git submodule sync --recursive
           git submodule update --init --recursive
-          ls -la crypto_plugins/flutter_libmwc
-          ls -la crypto_plugins/flutter_libepiccash
-          ls -la crypto_plugins/frostdart
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: "3.38.5"
 
       - name: Generate pubspec.yaml for Stack Wallet
         shell: bash
@@ -54,11 +51,14 @@ jobs:
             pubspec.yaml \
             MWC MWEBD XMR WOW SAL TOR EPIC FIRO XEL FROST
 
-          echo "----- pubspec.yaml (head) -----"
-          head -n 60 pubspec.yaml
-
       - name: Flutter pub get
         run: flutter pub get
+
+      - name: Ensure Windows project exists
+        shell: bash
+        run: |
+          flutter config --enable-windows-desktop
+          flutter create --platforms=windows .
 
       - name: Build Windows release
         run: flutter build windows --release

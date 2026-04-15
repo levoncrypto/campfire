@@ -38,25 +38,42 @@ jobs:
           git submodule sync --recursive
           git submodule update --init --recursive
 
-      - name: Generate pubspec.yaml for Stack Wallet (without MWEBD)
+      - name: Generate Stack Wallet config + required generated files
         shell: bash
         run: |
-          cp scripts/app_config/templates/pubspec.template.yaml pubspec.yaml
-          sed -i 's/^name: PLACEHOLDER/name: stackwallet/' pubspec.yaml
-          sed -i 's/^description: PLACEHOLDER/description: Stack Wallet/' pubspec.yaml
-          sed -i 's/PLACEHOLDER_V/2.1.0/g' pubspec.yaml
-          sed -i 's/PLACEHOLDER_B/12951296/g' pubspec.yaml
+          source scripts/env.sh
+          export BUILD_ISAR_FROM_SOURCE=0
 
-          # Intentionally exclude MWEBD to avoid flutter_mwebd Windows CI blocker
-          dart tool/process_pubspec_deps.dart \
-            pubspec.yaml \
+          # Creates lib/external_api_keys.dart if missing
+          (cd scripts && bash prebuild.sh)
+
+          # Creates pubspec.yaml from template + platform templates
+          source scripts/app_config/templates/configure_template_files.sh
+
+          # Fill version placeholders in pubspec.yaml
+          bash scripts/app_config/shared/update_version.sh -v 2.1.0 -b 12951296
+
+          # Generates app_config.g.dart + enables deps + generates wl_gen interfaces
+          # (without windows arg to avoid mwebd.exe build in CI)
+          bash scripts/app_config/configure_stack_wallet.sh
+
+          # Disable flutter_mwebd dependency to avoid Windows CI blocker in this pipeline
+          sed -i 's/^[[:space:]]*flutter_mwebd:/#  flutter_mwebd:/' pubspec.yaml
+
+          # Re-generate interfaces with MWEBD disabled (OFF sections used)
+          dart tool/gen_interfaces.dart \
+            tool/wl_templates \
+            lib/wl_gen/generated \
             MWC XMR WOW SAL TOR EPIC FIRO XEL FROST
 
-          # Fail only if flutter_mwebd is uncommented and active
-          if grep -Eq '^[[:space:]]*flutter_mwebd:' pubspec.yaml; then
-            echo "flutter_mwebd is enabled"
-            exit 1
-          fi
+          echo "----- sanity checks -----"
+          test -f pubspec.yaml
+          test -f lib/app_config.g.dart
+          test -f lib/external_api_keys.dart
+          test -f lib/wl_gen/generated/tor_service_impl.dart
+          test -f lib/wl_gen/generated/spark_interface_impl.dart
+          test -f lib/wl_gen/generated/mwebd_server_interface_impl.dart
+          head -n 30 pubspec.yaml
 
       - name: Flutter pub get
         run: flutter pub get

@@ -14,6 +14,7 @@ jobs:
           repository: cypherstack/stack_wallet
           ref: staging
           fetch-depth: 0
+          submodules: recursive
 
       - name: Merge PR 1295 and PR 1296
         shell: bash
@@ -25,6 +26,15 @@ jobs:
           git checkout -b build/pr1295-pr1296
           git merge --no-ff --no-edit pr-1295
           git merge --no-ff --no-edit pr-1296
+
+      - name: Init submodules
+        shell: bash
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive
+          ls -la crypto_plugins/flutter_libmwc
+          ls -la crypto_plugins/flutter_libepiccash
+          ls -la crypto_plugins/frostdart
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -45,7 +55,7 @@ jobs:
             MWC MWEBD XMR WOW SAL TOR EPIC FIRO XEL FROST
 
           echo "----- pubspec.yaml (head) -----"
-          head -n 40 pubspec.yaml
+          head -n 60 pubspec.yaml
 
       - name: Flutter pub get
         run: flutter pub get

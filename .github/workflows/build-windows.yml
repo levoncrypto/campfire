@@ -60,20 +60,9 @@ jobs:
             lib/wl_gen/generated \
             MWC XMR WOW SAL TOR EPIC FIRO XEL FROST
 
-          # Hard-disable problematic optional deps in CI (reliable regex-based patch)
-          python - <<'PY'
-from pathlib import Path
-import re
-
-p = Path("pubspec.yaml")
-t = p.read_text(encoding="utf-8")
-
-t = re.sub(r'^(?P<i>\s*)flutter_mwebd:\s*', r'\g<i># flutter_mwebd: ', t, flags=re.M)
-t = re.sub(r'^(?P<i>\s*)sqlite3_flutter_libs:\s*', r'\g<i># sqlite3_flutter_libs: ', t, flags=re.M)
-
-p.write_text(t, encoding="utf-8")
-print("Patched pubspec.yaml")
-PY
+          # Disable problematic optional deps in CI
+          sed -i 's/^[[:space:]]*flutter_mwebd:/#  flutter_mwebd:/' pubspec.yaml
+          sed -i 's/^[[:space:]]*sqlite3_flutter_libs:/#  sqlite3_flutter_libs:/' pubspec.yaml
 
           # Verify they are not active keys
           if grep -Eq '^[[:space:]]*flutter_mwebd:' pubspec.yaml; then
@@ -127,8 +116,6 @@ PY
 
           $txt = $txt -replace 'project\(place_holder LANGUAGES CXX\)', 'project(stack_wallet LANGUAGES CXX)'
           $txt = $txt -replace 'set\(BINARY_NAME "place_holder"\)', 'set(BINARY_NAME "stack_wallet")'
-
-          # Force-disable optional native installs that frequently break CI
           $txt = [regex]::Replace($txt, 'set\(INCLUDE_EPIC_SO\s+[^\)]+\)', 'set(INCLUDE_EPIC_SO OFF)')
           $txt = [regex]::Replace($txt, 'set\(INCLUDE_MWC_SO\s+[^\)]+\)', 'set(INCLUDE_MWC_SO OFF)')
 
@@ -139,26 +126,15 @@ PY
         run: flutter pub get
 
       - name: Sanitize generated Windows plugin list
-        shell: bash
+        shell: pwsh
         run: |
-          if [ -f windows/flutter/generated_plugins.cmake ]; then
-            python - <<'PY'
-from pathlib import Path
-p = Path("windows/flutter/generated_plugins.cmake")
-t = p.read_text(encoding="utf-8")
-lines = t.splitlines()
-blocked = ("flutter_mwebd", "sqlite3_flutter_libs")
-lines = [ln for ln in lines if not any(b in ln for b in blocked)]
-p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-print("Sanitized windows/flutter/generated_plugins.cmake")
-PY
-          fi
-
-          if [ -f windows/flutter/generated_plugins.cmake ]; then
-            if grep -E "flutter_mwebd|sqlite3_flutter_libs" windows/flutter/generated_plugins.cmake; then
-              echo "Blocked plugins still present in generated_plugins.cmake"; exit 1
-            fi
-          fi
+          $f = "windows/flutter/generated_plugins.cmake"
+          if (Test-Path $f) {
+            $lines = Get-Content $f
+            $lines = $lines | Where-Object { $_ -notmatch "flutter_mwebd|sqlite3_flutter_libs" }
+            Set-Content $f $lines
+            Write-Host "Sanitized generated_plugins.cmake"
+          }
 
       - name: Build secp256k1.dll (Windows)
         shell: pwsh
@@ -169,7 +145,6 @@ PY
 
           New-Item -ItemType Directory -Force -Path "build" | Out-Null
           Copy-Item $dll.FullName "build/secp256k1.dll" -Force
-
           if (-not (Test-Path "build/secp256k1.dll")) { throw "secp256k1.dll copy failed" }
 
       - name: Build Windows release (verbose)

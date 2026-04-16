@@ -43,6 +43,13 @@ jobs:
           git submodule sync --recursive
           git submodule update --init --recursive
 
+      - name: Disable frostdart bundled DLL install in CI
+        shell: bash
+        run: |
+          if [ -f crypto_plugins/frostdart/windows/CMakeLists.txt ]; then
+            sed -i '/frostdart\.dll/d' crypto_plugins/frostdart/windows/CMakeLists.txt
+          fi
+
       - name: Generate Stack Wallet config + required generated files
         shell: bash
         run: |
@@ -60,7 +67,7 @@ jobs:
             lib/wl_gen/generated \
             MWC XMR WOW SAL TOR EPIC FIRO XEL FROST
 
-          # Disable optional/problematic deps in CI
+          # Disable problematic optional deps in CI
           sed -i 's/^[[:space:]]*flutter_mwebd:/#  flutter_mwebd:/' pubspec.yaml
           sed -i 's/^[[:space:]]*sqlite3_flutter_libs:/#  sqlite3_flutter_libs:/' pubspec.yaml
 

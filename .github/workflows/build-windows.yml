@@ -2,8 +2,6 @@ name: Build Windows (PR1295 + PR1296)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
 
 jobs:
   build:
@@ -54,23 +52,31 @@ jobs:
           bash scripts/app_config/shared/update_version.sh -v 2.1.0 -b 12951296
           bash scripts/app_config/configure_stack_wallet.sh
 
-          # Disable problematic optional deps in CI
-          sed -i 's/^[[:space:]]*flutter_mwebd:/#  flutter_mwebd:/' pubspec.yaml
-          sed -i 's/^[[:space:]]*sqlite3_flutter_libs:/#  sqlite3_flutter_libs:/' pubspec.yaml
-
-          # Verify they are not active keys
-          if grep -Eq '^[[:space:]]*flutter_mwebd:' pubspec.yaml; then
-            echo "flutter_mwebd is still enabled"; exit 1
-          fi
-          if grep -Eq '^[[:space:]]*sqlite3_flutter_libs:' pubspec.yaml; then
-            echo "sqlite3_flutter_libs is still enabled"; exit 1
-          fi
-
           # Regenerate interfaces with MWEBD disabled
           dart tool/gen_interfaces.dart \
             tool/wl_templates \
             lib/wl_gen/generated \
             MWC XMR WOW SAL TOR EPIC FIRO XEL FROST
+
+          # Hard-disable problematic plugins in pubspec.yaml
+          python - <<'PY'
+from pathlib import Path
+import re
+p = Path("pubspec.yaml")
+t = p.read_text(encoding="utf-8")
+t = re.sub(r'^(?P<i>\s*)flutter_mwebd:\s*', r'\g<i># flutter_mwebd: ', t, flags=re.M)
+t = re.sub(r'^(?P<i>\s*)sqlite3_flutter_libs:\s*', r'\g<i># sqlite3_flutter_libs: ', t, flags=re.M)
+p.write_text(t, encoding="utf-8")
+print("Patched pubspec.yaml")
+PY
+
+          # Verify these are not active keys
+          if grep -Eq '^[[:space:]]*flutter_mwebd:' pubspec.yaml; then
+            echo "flutter_mwebd still active"; exit 1
+          fi
+          if grep -Eq '^[[:space:]]*sqlite3_flutter_libs:' pubspec.yaml; then
+            echo "sqlite3_flutter_libs still active"; exit 1
+          fi
 
       - name: Create plugin git_versions.dart files
         shell: bash
@@ -102,9 +108,6 @@ jobs:
             throw "Missing assets/lottie/loader.json after copy"
           }
 
-      - name: Flutter pub get
-        run: flutter pub get
-
       - name: Ensure Windows project exists
         shell: bash
         run: |
@@ -119,14 +122,36 @@ jobs:
 
           $txt = $txt -replace 'project\(place_holder LANGUAGES CXX\)', 'project(stack_wallet LANGUAGES CXX)'
           $txt = $txt -replace 'set\(BINARY_NAME "place_holder"\)', 'set(BINARY_NAME "stack_wallet")'
-
-          # Force-disable optional native installs that frequently break CI
           $txt = [regex]::Replace($txt, 'set\(INCLUDE_EPIC_SO\s+[^\)]+\)', 'set(INCLUDE_EPIC_SO OFF)')
           $txt = [regex]::Replace($txt, 'set\(INCLUDE_MWC_SO\s+[^\)]+\)', 'set(INCLUDE_MWC_SO OFF)')
 
           Set-Content $cm $txt
+          Write-Host "Normalized CMake placeholders and disabled EPIC/MWC SO install flags."
 
-          Write-Host "Normalized CMake placeholders and install flags."
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Sanitize generated Windows plugin list
+        shell: bash
+        run: |
+          python - <<'PY'
+from pathlib import Path
+p = Path("windows/flutter/generated_plugins.cmake")
+if p.exists():
+    lines = p.read_text(encoding="utf-8").splitlines()
+    blocked = ("flutter_mwebd", "sqlite3_flutter_libs")
+    lines = [ln for ln in lines if not any(b in ln for b in blocked)]
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("Sanitized generated_plugins.cmake")
+else:
+    print("generated_plugins.cmake not found yet")
+PY
+
+          if [ -f windows/flutter/generated_plugins.cmake ]; then
+            if grep -E "flutter_mwebd|sqlite3_flutter_libs" windows/flutter/generated_plugins.cmake; then
+              echo "Blocked plugins still present in generated_plugins.cmake"; exit 1
+            fi
+          fi
 
       - name: Build secp256k1.dll (Windows)
         shell: pwsh
@@ -137,7 +162,6 @@ jobs:
 
           New-Item -ItemType Directory -Force -Path "build" | Out-Null
           Copy-Item $dll.FullName "build/secp256k1.dll" -Force
-
           if (-not (Test-Path "build/secp256k1.dll")) { throw "secp256k1.dll copy failed" }
 
       - name: Build Windows release (verbose)

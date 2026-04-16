@@ -2,10 +2,13 @@ name: Build Windows (PR1295 + PR1296)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ main ]
 
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 120
 
     steps:
       - name: Checkout upstream staging
@@ -26,11 +29,13 @@ jobs:
           git checkout -b build/pr1295-pr1296
           git merge --no-ff --no-edit pr-1295
           git merge --no-ff --no-edit pr-1296
+          git log --oneline -n 5
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.38.5"
+          cache: true
 
       - name: Init submodules
         shell: bash
@@ -49,8 +54,17 @@ jobs:
           bash scripts/app_config/shared/update_version.sh -v 2.1.0 -b 12951296
           bash scripts/app_config/configure_stack_wallet.sh
 
-          # Disable flutter_mwebd dependency in CI
+          # Disable problematic optional deps in CI
           sed -i 's/^[[:space:]]*flutter_mwebd:/#  flutter_mwebd:/' pubspec.yaml
+          sed -i 's/^[[:space:]]*sqlite3_flutter_libs:/#  sqlite3_flutter_libs:/' pubspec.yaml
+
+          # Verify they are not active keys
+          if grep -Eq '^[[:space:]]*flutter_mwebd:' pubspec.yaml; then
+            echo "flutter_mwebd is still enabled"; exit 1
+          fi
+          if grep -Eq '^[[:space:]]*sqlite3_flutter_libs:' pubspec.yaml; then
+            echo "sqlite3_flutter_libs is still enabled"; exit 1
+          fi
 
           # Regenerate interfaces with MWEBD disabled
           dart tool/gen_interfaces.dart \
@@ -61,11 +75,17 @@ jobs:
       - name: Create plugin git_versions.dart files
         shell: bash
         run: |
-          cp crypto_plugins/flutter_libepiccash/lib/git_versions_example.dart crypto_plugins/flutter_libepiccash/lib/git_versions.dart
-          cp crypto_plugins/flutter_libmwc/lib/git_versions_example.dart crypto_plugins/flutter_libmwc/lib/git_versions.dart
           COMMIT="$(git log -1 --pretty=format:%H)"
-          sed -i "s/\\/\\*WINDOWS_VERSION\\*\\/ const WINDOWS_VERSION = \"\"/\\/\\*WINDOWS_VERSION\\*\\/ const WINDOWS_VERSION = \"${COMMIT}\"/" crypto_plugins/flutter_libepiccash/lib/git_versions.dart
-          sed -i "s/\\/\\*WINDOWS_VERSION\\*\\/ const WINDOWS_VERSION = \"\"/\\/\\*WINDOWS_VERSION\\*\\/ const WINDOWS_VERSION = \"${COMMIT}\"/" crypto_plugins/flutter_libmwc/lib/git_versions.dart
+
+          cp crypto_plugins/flutter_libepiccash/lib/git_versions_example.dart \
+             crypto_plugins/flutter_libepiccash/lib/git_versions.dart
+          cp crypto_plugins/flutter_libmwc/lib/git_versions_example.dart \
+             crypto_plugins/flutter_libmwc/lib/git_versions.dart
+
+          sed -i "s|/\\*WINDOWS_VERSION\\*/ const WINDOWS_VERSION = \"\"|/\\*WINDOWS_VERSION\\*/ const WINDOWS_VERSION = \"${COMMIT}\"|" \
+            crypto_plugins/flutter_libepiccash/lib/git_versions.dart
+          sed -i "s|/\\*WINDOWS_VERSION\\*/ const WINDOWS_VERSION = \"\"|/\\*WINDOWS_VERSION\\*/ const WINDOWS_VERSION = \"${COMMIT}\"|" \
+            crypto_plugins/flutter_libmwc/lib/git_versions.dart
 
       - name: Prepare assets for Stack Wallet
         shell: pwsh
@@ -99,18 +119,14 @@ jobs:
 
           $txt = $txt -replace 'project\(place_holder LANGUAGES CXX\)', 'project(stack_wallet LANGUAGES CXX)'
           $txt = $txt -replace 'set\(BINARY_NAME "place_holder"\)', 'set(BINARY_NAME "stack_wallet")'
-          $txt = $txt -replace 'set\(INCLUDE_EPIC_SO INCLUDE_EPIC_SO_FLAG\)', 'set(INCLUDE_EPIC_SO OFF)'
-          $txt = $txt -replace 'set\(INCLUDE_MWC_SO INCLUDE_MWC_SO_FLAG\)', 'set(INCLUDE_MWC_SO OFF)'
+
+          # Force-disable optional native installs that frequently break CI
+          $txt = [regex]::Replace($txt, 'set\(INCLUDE_EPIC_SO\s+[^\)]+\)', 'set(INCLUDE_EPIC_SO OFF)')
+          $txt = [regex]::Replace($txt, 'set\(INCLUDE_MWC_SO\s+[^\)]+\)', 'set(INCLUDE_MWC_SO OFF)')
 
           Set-Content $cm $txt
 
-          Write-Host "---- windows/CMakeLists.txt flags ----"
-          Select-String -Path $cm -SimpleMatch -Pattern @(
-            "project(",
-            "BINARY_NAME",
-            "INCLUDE_EPIC_SO",
-            "INCLUDE_MWC_SO"
-          )
+          Write-Host "Normalized CMake placeholders and install flags."
 
       - name: Build secp256k1.dll (Windows)
         shell: pwsh
@@ -129,10 +145,11 @@ jobs:
 
       - name: Zip release
         shell: pwsh
-        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath windows_build.zip
+        run: |
+          Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath windows_build.zip -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows_build
+          name: windows_build_pr1295_pr1296
           path: windows_build.zip

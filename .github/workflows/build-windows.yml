@@ -60,7 +60,7 @@ jobs:
             lib/wl_gen/generated \
             MWC XMR WOW SAL TOR EPIC FIRO XEL FROST
 
-          # Disable problematic optional deps in CI
+          # Disable optional/problematic deps in CI
           sed -i 's/^[[:space:]]*flutter_mwebd:/#  flutter_mwebd:/' pubspec.yaml
           sed -i 's/^[[:space:]]*sqlite3_flutter_libs:/#  sqlite3_flutter_libs:/' pubspec.yaml
 
@@ -125,15 +125,33 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      - name: Sanitize generated Windows plugin list
+      - name: Sanitize generated Windows plugins
         shell: pwsh
         run: |
-          $f = "windows/flutter/generated_plugins.cmake"
-          if (Test-Path $f) {
-            $lines = Get-Content $f
-            $lines = $lines | Where-Object { $_ -notmatch "flutter_mwebd|sqlite3_flutter_libs" }
-            Set-Content $f $lines
-            Write-Host "Sanitized generated_plugins.cmake"
+          $blocked = "flutter_mwebd|sqlite3_flutter_libs|frostdart"
+
+          $files = @(
+            "windows/flutter/generated_plugins.cmake",
+            "windows/flutter/generated_plugin_registrant.cc",
+            "windows/flutter/generated_plugin_registrant.h"
+          )
+
+          foreach ($f in $files) {
+            if (Test-Path $f) {
+              $lines = Get-Content $f
+              $lines = $lines | Where-Object { $_ -notmatch $blocked }
+              Set-Content $f $lines
+              Write-Host "Sanitized $f"
+            }
+          }
+
+          foreach ($f in $files) {
+            if (Test-Path $f) {
+              $match = Select-String -Path $f -Pattern $blocked
+              if ($match) {
+                throw "Blocked plugin still present in $f"
+              }
+            }
           }
 
       - name: Build secp256k1.dll (Windows)

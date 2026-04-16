@@ -6,6 +6,7 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 120
 
     steps:
       - name: Checkout upstream staging
@@ -21,16 +22,24 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git fetch origin pull/1295/head:pr-1295
           git fetch origin pull/1296/head:pr-1296
+
           git checkout -b build/pr1295-pr1296
           git merge --no-ff --no-edit pr-1295
           git merge --no-ff --no-edit pr-1296
+
+          git log --oneline -n 5
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.38.5"
+          cache: true
+
+      - name: Flutter doctor
+        run: flutter doctor -v
 
       - name: Init submodules
         shell: bash
@@ -49,23 +58,45 @@ jobs:
           bash scripts/app_config/shared/update_version.sh -v 2.1.0 -b 12951296
           bash scripts/app_config/configure_stack_wallet.sh
 
-          # Disable flutter_mwebd dependency in CI
-          sed -i 's/^[[:space:]]*flutter_mwebd:/#  flutter_mwebd:/' pubspec.yaml
-
-          # Regenerate interfaces with MWEBD disabled
+          # Re-generate interfaces explicitly without MWEBD
           dart tool/gen_interfaces.dart \
             tool/wl_templates \
             lib/wl_gen/generated \
             MWC XMR WOW SAL TOR EPIC FIRO XEL FROST
 
+          # Hard-disable problematic optional deps for CI Windows build
+          python - <<'PY'
+from pathlib import Path
+p = Path("pubspec.yaml")
+t = p.read_text(encoding="utf-8")
+t = t.replace("  flutter_mwebd:", "  # flutter_mwebd:")
+t = t.replace("  sqlite3_flutter_libs:", "  # sqlite3_flutter_libs:")
+p.write_text(t, encoding="utf-8")
+print("Patched pubspec.yaml: flutter_mwebd + sqlite3_flutter_libs disabled")
+PY
+
+          # Verify they are not enabled as active keys
+          if grep -Eq '^[[:space:]]*flutter_mwebd:' pubspec.yaml; then
+            echo "flutter_mwebd is still enabled"; exit 1
+          fi
+          if grep -Eq '^[[:space:]]*sqlite3_flutter_libs:' pubspec.yaml; then
+            echo "sqlite3_flutter_libs is still enabled"; exit 1
+          fi
+
       - name: Create plugin git_versions.dart files
         shell: bash
         run: |
-          cp crypto_plugins/flutter_libepiccash/lib/git_versions_example.dart crypto_plugins/flutter_libepiccash/lib/git_versions.dart
-          cp crypto_plugins/flutter_libmwc/lib/git_versions_example.dart crypto_plugins/flutter_libmwc/lib/git_versions.dart
           COMMIT="$(git log -1 --pretty=format:%H)"
-          sed -i "s/\\/\\*WINDOWS_VERSION\\*\\/ const WINDOWS_VERSION = \"\"/\\/\\*WINDOWS_VERSION\\*\\/ const WINDOWS_VERSION = \"${COMMIT}\"/" crypto_plugins/flutter_libepiccash/lib/git_versions.dart
-          sed -i "s/\\/\\*WINDOWS_VERSION\\*\\/ const WINDOWS_VERSION = \"\"/\\/\\*WINDOWS_VERSION\\*\\/ const WINDOWS_VERSION = \"${COMMIT}\"/" crypto_plugins/flutter_libmwc/lib/git_versions.dart
+
+          if [ -f crypto_plugins/flutter_libepiccash/lib/git_versions_example.dart ]; then
+            cp crypto_plugins/flutter_libepiccash/lib/git_versions_example.dart crypto_plugins/flutter_libepiccash/lib/git_versions.dart
+            sed -i "s|/\*WINDOWS_VERSION\*/ const WINDOWS_VERSION = \"\"|/\*WINDOWS_VERSION\*/ const WINDOWS_VERSION = \"${COMMIT}\"|" crypto_plugins/flutter_libepiccash/lib/git_versions.dart
+          fi
+
+          if [ -f crypto_plugins/flutter_libmwc/lib/git_versions_example.dart ]; then
+            cp crypto_plugins/flutter_libmwc/lib/git_versions_example.dart crypto_plugins/flutter_libmwc/lib/git_versions.dart
+            sed -i "s|/\*WINDOWS_VERSION\*/ const WINDOWS_VERSION = \"\"|/\*WINDOWS_VERSION\*/ const WINDOWS_VERSION = \"${COMMIT}\"|" crypto_plugins/flutter_libmwc/lib/git_versions.dart
+          fi
 
       - name: Prepare assets for Stack Wallet
         shell: pwsh
@@ -74,10 +105,12 @@ jobs:
           foreach ($d in $dirs) {
             $src = "asset_sources/$d/stack_wallet"
             $dst = "assets/$d"
+
             if (!(Test-Path $src)) { throw "Missing source assets directory: $src" }
             if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
             Copy-Item $src $dst -Recurse -Force
           }
+
           if (!(Test-Path "assets/lottie/loader.json")) {
             throw "Missing assets/lottie/loader.json after copy"
           }
@@ -97,20 +130,20 @@ jobs:
           $cm = "windows/CMakeLists.txt"
           $txt = Get-Content $cm -Raw
 
-          # Replace template placeholders that may still survive in CI
           $txt = $txt -replace 'project\(place_holder LANGUAGES CXX\)', 'project(stack_wallet LANGUAGES CXX)'
           $txt = $txt -replace 'set\(BINARY_NAME "place_holder"\)', 'set(BINARY_NAME "stack_wallet")'
           $txt = $txt -replace 'set\(INCLUDE_EPIC_SO INCLUDE_EPIC_SO_FLAG\)', 'set(INCLUDE_EPIC_SO OFF)'
           $txt = $txt -replace 'set\(INCLUDE_MWC_SO INCLUDE_MWC_SO_FLAG\)', 'set(INCLUDE_MWC_SO OFF)'
 
           Set-Content $cm $txt
-          Write-Host "---- windows/CMakeLists.txt flags ----"
-          Select-String -Path $cm -Pattern "project\\(|BINARY_NAME|INCLUDE_EPIC_SO|INCLUDE_MWC_SO"
+
+          Write-Host "Normalized CMake placeholders."
 
       - name: Build secp256k1.dll (Windows)
         shell: pwsh
         run: |
           cmd /c "cd scripts\windows && build_secp256k1.bat"
+
           $dll = Get-ChildItem -Path "scripts/windows/build/secp256k1" -Recurse -Filter "libsecp256k1-2.dll" | Select-Object -First 1
           if (-not $dll) { throw "libsecp256k1-2.dll not found after build" }
 
@@ -124,10 +157,13 @@ jobs:
 
       - name: Zip release
         shell: pwsh
-        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath windows_build.zip
+        run: |
+          $releasePath = "build/windows/x64/runner/Release"
+          if (!(Test-Path $releasePath)) { throw "Release folder not found: $releasePath" }
+          Compress-Archive -Path "$releasePath/*" -DestinationPath windows_build.zip -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows_build
+          name: windows_build_pr1295_pr1296
           path: windows_build.zip

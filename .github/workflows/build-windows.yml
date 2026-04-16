@@ -76,8 +76,30 @@ jobs:
           sed -i "s/\\/\\*WINDOWS_VERSION\\*\\/ const WINDOWS_VERSION = \"\"/\\/\\*WINDOWS_VERSION\\*\\/ const WINDOWS_VERSION = \"${COMMIT}\"/" crypto_plugins/flutter_libepiccash/lib/git_versions.dart
           sed -i "s/\\/\\*WINDOWS_VERSION\\*\\/ const WINDOWS_VERSION = \"\"/\\/\\*WINDOWS_VERSION\\*\\/ const WINDOWS_VERSION = \"${COMMIT}\"/" crypto_plugins/flutter_libmwc/lib/git_versions.dart
 
-          test -f crypto_plugins/flutter_libepiccash/lib/git_versions.dart
-          test -f crypto_plugins/flutter_libmwc/lib/git_versions.dart
+      - name: Prepare assets for Stack Wallet
+        shell: pwsh
+        run: |
+          $dirs = @("default_themes","icon","lottie","in_app_logo_icons","svg")
+          foreach ($d in $dirs) {
+            $src = "asset_sources/$d/stack_wallet"
+            $dst = "assets/$d"
+
+            if (!(Test-Path $src)) {
+              throw "Missing source assets directory: $src"
+            }
+
+            if (Test-Path $dst) {
+              Remove-Item $dst -Recurse -Force
+            }
+
+            Copy-Item $src $dst -Recurse -Force
+          }
+
+          if (!(Test-Path "assets/lottie/loader.json")) {
+            throw "Missing assets/lottie/loader.json after copy"
+          }
+
+          Write-Host "Assets prepared successfully."
 
       - name: Flutter pub get
         run: flutter pub get

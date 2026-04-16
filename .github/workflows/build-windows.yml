@@ -97,15 +97,20 @@ jobs:
           $cm = "windows/CMakeLists.txt"
           $txt = Get-Content $cm -Raw
 
-          # Replace template placeholders that may still survive in CI
           $txt = $txt -replace 'project\(place_holder LANGUAGES CXX\)', 'project(stack_wallet LANGUAGES CXX)'
           $txt = $txt -replace 'set\(BINARY_NAME "place_holder"\)', 'set(BINARY_NAME "stack_wallet")'
           $txt = $txt -replace 'set\(INCLUDE_EPIC_SO INCLUDE_EPIC_SO_FLAG\)', 'set(INCLUDE_EPIC_SO OFF)'
           $txt = $txt -replace 'set\(INCLUDE_MWC_SO INCLUDE_MWC_SO_FLAG\)', 'set(INCLUDE_MWC_SO OFF)'
 
           Set-Content $cm $txt
+
           Write-Host "---- windows/CMakeLists.txt flags ----"
-          Select-String -Path $cm -Pattern "project\\(|BINARY_NAME|INCLUDE_EPIC_SO|INCLUDE_MWC_SO"
+          Select-String -Path $cm -SimpleMatch -Pattern @(
+            "project(",
+            "BINARY_NAME",
+            "INCLUDE_EPIC_SO",
+            "INCLUDE_MWC_SO"
+          )
 
       - name: Build secp256k1.dll (Windows)
         shell: pwsh

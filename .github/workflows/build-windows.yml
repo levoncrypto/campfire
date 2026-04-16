@@ -44,23 +44,23 @@ jobs:
           source scripts/env.sh
           export BUILD_ISAR_FROM_SOURCE=0
 
-          # Creates lib/external_api_keys.dart if missing
+          # creates lib/external_api_keys.dart if missing
           (cd scripts && bash prebuild.sh)
 
-          # Creates pubspec.yaml from template + platform templates
+          # creates pubspec.yaml + platform templates
           source scripts/app_config/templates/configure_template_files.sh
 
-          # Fill version placeholders in pubspec.yaml
+          # fills PLACEHOLDER_V / PLACEHOLDER_B
           bash scripts/app_config/shared/update_version.sh -v 2.1.0 -b 12951296
 
-          # Generates app_config.g.dart + enables deps + generates wl_gen interfaces
-          # (without windows arg to avoid mwebd.exe build in CI)
+          # generates app_config.g.dart + wl_gen files with default markers
+          # (without "windows" arg to avoid building mwebd.exe in CI)
           bash scripts/app_config/configure_stack_wallet.sh
 
-          # Disable flutter_mwebd dependency to avoid Windows CI blocker in this pipeline
+          # disable flutter_mwebd dependency for CI stability
           sed -i 's/^[[:space:]]*flutter_mwebd:/#  flutter_mwebd:/' pubspec.yaml
 
-          # Re-generate interfaces with MWEBD disabled (OFF sections used)
+          # regenerate interfaces with MWEBD disabled (OFF sections used)
           dart tool/gen_interfaces.dart \
             tool/wl_templates \
             lib/wl_gen/generated \
@@ -99,8 +99,6 @@ jobs:
             throw "Missing assets/lottie/loader.json after copy"
           }
 
-          Write-Host "Assets prepared successfully."
-
       - name: Flutter pub get
         run: flutter pub get
 
@@ -127,7 +125,12 @@ jobs:
             throw "secp256k1.dll copy failed"
           }
 
-          Write-Host "secp256k1.dll prepared at build/secp256k1.dll"
+      - name: Disable Epic/MWC external DLL install in CMake
+        shell: bash
+        run: |
+          sed -i 's/set(INCLUDE_EPIC_SO ON)/set(INCLUDE_EPIC_SO OFF)/' windows/CMakeLists.txt || true
+          sed -i 's/set(INCLUDE_MWC_SO ON)/set(INCLUDE_MWC_SO OFF)/' windows/CMakeLists.txt || true
+          grep -n "INCLUDE_EPIC_SO\|INCLUDE_MWC_SO" windows/CMakeLists.txt
 
       - name: Build Windows release
         run: flutter build windows --release

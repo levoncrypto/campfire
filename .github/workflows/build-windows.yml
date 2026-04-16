@@ -44,23 +44,15 @@ jobs:
           source scripts/env.sh
           export BUILD_ISAR_FROM_SOURCE=0
 
-          # creates lib/external_api_keys.dart if missing
           (cd scripts && bash prebuild.sh)
-
-          # creates pubspec.yaml + platform templates
           source scripts/app_config/templates/configure_template_files.sh
-
-          # fills PLACEHOLDER_V / PLACEHOLDER_B
           bash scripts/app_config/shared/update_version.sh -v 2.1.0 -b 12951296
-
-          # generates app_config.g.dart + wl_gen files with default markers
-          # (without "windows" arg to avoid building mwebd.exe in CI)
           bash scripts/app_config/configure_stack_wallet.sh
 
-          # disable flutter_mwebd dependency for CI stability
+          # disable flutter_mwebd in CI
           sed -i 's/^[[:space:]]*flutter_mwebd:/#  flutter_mwebd:/' pubspec.yaml
 
-          # regenerate interfaces with MWEBD disabled (OFF sections used)
+          # regenerate wl interfaces without MWEBD
           dart tool/gen_interfaces.dart \
             tool/wl_templates \
             lib/wl_gen/generated \
@@ -71,7 +63,6 @@ jobs:
         run: |
           cp crypto_plugins/flutter_libepiccash/lib/git_versions_example.dart crypto_plugins/flutter_libepiccash/lib/git_versions.dart
           cp crypto_plugins/flutter_libmwc/lib/git_versions_example.dart crypto_plugins/flutter_libmwc/lib/git_versions.dart
-
           COMMIT="$(git log -1 --pretty=format:%H)"
           sed -i "s/\\/\\*WINDOWS_VERSION\\*\\/ const WINDOWS_VERSION = \"\"/\\/\\*WINDOWS_VERSION\\*\\/ const WINDOWS_VERSION = \"${COMMIT}\"/" crypto_plugins/flutter_libepiccash/lib/git_versions.dart
           sed -i "s/\\/\\*WINDOWS_VERSION\\*\\/ const WINDOWS_VERSION = \"\"/\\/\\*WINDOWS_VERSION\\*\\/ const WINDOWS_VERSION = \"${COMMIT}\"/" crypto_plugins/flutter_libmwc/lib/git_versions.dart
@@ -83,18 +74,10 @@ jobs:
           foreach ($d in $dirs) {
             $src = "asset_sources/$d/stack_wallet"
             $dst = "assets/$d"
-
-            if (!(Test-Path $src)) {
-              throw "Missing source assets directory: $src"
-            }
-
-            if (Test-Path $dst) {
-              Remove-Item $dst -Recurse -Force
-            }
-
+            if (!(Test-Path $src)) { throw "Missing source assets directory: $src" }
+            if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
             Copy-Item $src $dst -Recurse -Force
           }
-
           if (!(Test-Path "assets/lottie/loader.json")) {
             throw "Missing assets/lottie/loader.json after copy"
           }
@@ -112,28 +95,25 @@ jobs:
         shell: pwsh
         run: |
           cmd /c "cd scripts\windows && build_secp256k1.bat"
-
           $dll = Get-ChildItem -Path "scripts/windows/build/secp256k1" -Recurse -Filter "libsecp256k1-2.dll" | Select-Object -First 1
-          if (-not $dll) {
-            throw "libsecp256k1-2.dll not found after build"
-          }
-
+          if (-not $dll) { throw "libsecp256k1-2.dll not found after build" }
           New-Item -ItemType Directory -Force -Path "build" | Out-Null
           Copy-Item $dll.FullName "build/secp256k1.dll" -Force
+          if (-not (Test-Path "build/secp256k1.dll")) { throw "secp256k1.dll copy failed" }
 
-          if (-not (Test-Path "build/secp256k1.dll")) {
-            throw "secp256k1.dll copy failed"
-          }
-
-      - name: Disable Epic/MWC external DLL install in CMake
-        shell: bash
+      - name: Force-disable Epic/MWC external DLL install in windows/CMakeLists.txt
+        shell: pwsh
         run: |
-          sed -i 's/set(INCLUDE_EPIC_SO ON)/set(INCLUDE_EPIC_SO OFF)/' windows/CMakeLists.txt || true
-          sed -i 's/set(INCLUDE_MWC_SO ON)/set(INCLUDE_MWC_SO OFF)/' windows/CMakeLists.txt || true
-          grep -n "INCLUDE_EPIC_SO\|INCLUDE_MWC_SO" windows/CMakeLists.txt
+          $p = "windows/CMakeLists.txt"
+          $c = Get-Content $p -Raw
+          $c = [regex]::Replace($c, "set\(INCLUDE_EPIC_SO\s+[^\)]+\)", "set(INCLUDE_EPIC_SO OFF)")
+          $c = [regex]::Replace($c, "set\(INCLUDE_MWC_SO\s+[^\)]+\)", "set(INCLUDE_MWC_SO OFF)")
+          Set-Content $p $c
+          Write-Host "---- INCLUDE flags in windows/CMakeLists.txt ----"
+          Select-String -Path $p -Pattern "INCLUDE_EPIC_SO|INCLUDE_MWC_SO"
 
-      - name: Build Windows release
-        run: flutter build windows --release
+      - name: Build Windows release (verbose)
+        run: flutter build windows --release -v
 
       - name: Zip release
         shell: pwsh

@@ -49,14 +49,28 @@ jobs:
           bash scripts/app_config/shared/update_version.sh -v 2.1.0 -b 12951296
           bash scripts/app_config/configure_stack_wallet.sh
 
-          # disable flutter_mwebd in CI
+          # Disable flutter_mwebd in CI
           sed -i 's/^[[:space:]]*flutter_mwebd:/#  flutter_mwebd:/' pubspec.yaml
 
-          # regenerate wl interfaces without MWEBD
+          # CI workaround: disable sqlite3_flutter_libs plugin (INSTALL.vcxproj failure)
+          sed -i '/^[[:space:]]*sqlite3_flutter_libs:[[:space:]]*[0-9.]\+$/d' pubspec.yaml
+
+          # Regenerate interfaces without MWEBD
           dart tool/gen_interfaces.dart \
             tool/wl_templates \
             lib/wl_gen/generated \
             MWC XMR WOW SAL TOR EPIC FIRO XEL FROST
+
+          echo "---- sanity ----"
+          test -f pubspec.yaml
+          test -f lib/app_config.g.dart
+          test -f lib/external_api_keys.dart
+          test -f lib/wl_gen/generated/lib_spark_interface_impl.dart
+          test -f lib/wl_gen/generated/mwebd_server_interface_impl.dart
+          if grep -Eq '^[[:space:]]*sqlite3_flutter_libs:' pubspec.yaml; then
+            echo "sqlite3_flutter_libs is still enabled"
+            exit 1
+          fi
 
       - name: Create plugin git_versions.dart files
         shell: bash
@@ -109,8 +123,6 @@ jobs:
           $c = [regex]::Replace($c, "set\(INCLUDE_EPIC_SO\s+[^\)]+\)", "set(INCLUDE_EPIC_SO OFF)")
           $c = [regex]::Replace($c, "set\(INCLUDE_MWC_SO\s+[^\)]+\)", "set(INCLUDE_MWC_SO OFF)")
           Set-Content $p $c
-          Write-Host "---- INCLUDE flags in windows/CMakeLists.txt ----"
-          Select-String -Path $p -Pattern "INCLUDE_EPIC_SO|INCLUDE_MWC_SO"
 
       - name: Build Windows release (verbose)
         run: flutter build windows --release -v

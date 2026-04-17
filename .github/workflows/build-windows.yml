@@ -22,6 +22,7 @@ jobs:
       - name: Merge PR 1295 and PR 1296
         shell: bash
         run: |
+          set -euxo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin pull/1295/head:pr-1295
@@ -40,12 +41,14 @@ jobs:
       - name: Init submodules
         shell: bash
         run: |
+          set -euxo pipefail
           git submodule sync --recursive
           git submodule update --init --recursive
 
-      - name: Disable frostdart bundled DLL install in CI
+      - name: Disable frostdart DLL install in CI
         shell: bash
         run: |
+          set -euxo pipefail
           if [ -f crypto_plugins/frostdart/windows/CMakeLists.txt ]; then
             sed -i '/frostdart\.dll/d' crypto_plugins/frostdart/windows/CMakeLists.txt
           fi
@@ -53,6 +56,7 @@ jobs:
       - name: Generate Stack Wallet config + required generated files
         shell: bash
         run: |
+          set -euxo pipefail
           source scripts/env.sh
           export BUILD_ISAR_FROM_SOURCE=0
 
@@ -61,27 +65,22 @@ jobs:
           bash scripts/app_config/shared/update_version.sh -v 2.1.0 -b 12951296
           bash scripts/app_config/configure_stack_wallet.sh
 
-          # Regenerate interfaces with MWEBD disabled
+          # Disable MWEBD in CI to avoid unrelated Windows blockers.
+          sed -i 's/^[[:space:]]*flutter_mwebd:/#  flutter_mwebd:/' pubspec.yaml
+          if grep -Eq '^[[:space:]]*flutter_mwebd:' pubspec.yaml; then
+            echo "flutter_mwebd is still enabled"; exit 1
+          fi
+
+          # Regenerate interfaces without MWEBD
           dart tool/gen_interfaces.dart \
             tool/wl_templates \
             lib/wl_gen/generated \
             MWC XMR WOW SAL TOR EPIC FIRO XEL FROST
 
-          # Disable problematic optional deps in CI
-          sed -i 's/^[[:space:]]*flutter_mwebd:/#  flutter_mwebd:/' pubspec.yaml
-          sed -i 's/^[[:space:]]*sqlite3_flutter_libs:/#  sqlite3_flutter_libs:/' pubspec.yaml
-
-          # Verify they are not active keys
-          if grep -Eq '^[[:space:]]*flutter_mwebd:' pubspec.yaml; then
-            echo "flutter_mwebd is still enabled"; exit 1
-          fi
-          if grep -Eq '^[[:space:]]*sqlite3_flutter_libs:' pubspec.yaml; then
-            echo "sqlite3_flutter_libs is still enabled"; exit 1
-          fi
-
       - name: Create plugin git_versions.dart files
         shell: bash
         run: |
+          set -euxo pipefail
           COMMIT="$(git log -1 --pretty=format:%H)"
 
           cp crypto_plugins/flutter_libepiccash/lib/git_versions_example.dart \
@@ -112,22 +111,31 @@ jobs:
       - name: Ensure Windows project exists
         shell: bash
         run: |
+          set -euxo pipefail
           flutter config --enable-windows-desktop
           flutter create --platforms=windows .
 
-      - name: Normalize Windows CMake placeholders
+      - name: Fix Windows placeholders
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sed -i 's/PlaceHolderName/Stack Wallet/g' windows/runner/Runner.rc
+          sed -i 's/PlaceHolderName/Stack Wallet/g' windows/runner/main.cpp
+          sed -i 's/project(place_holder LANGUAGES CXX)/project(stack_wallet LANGUAGES CXX)/' windows/CMakeLists.txt
+          sed -i 's/set(BINARY_NAME "place_holder")/set(BINARY_NAME "stack_wallet")/' windows/CMakeLists.txt
+
+          if grep -R -nE 'PlaceHolderName|place_holder' windows; then
+            echo "Placeholder(s) still found in windows files"; exit 1
+          fi
+
+      - name: Normalize Windows CMake flags
         shell: pwsh
         run: |
           $cm = "windows/CMakeLists.txt"
           $txt = Get-Content $cm -Raw
-
-          $txt = $txt -replace 'project\(place_holder LANGUAGES CXX\)', 'project(stack_wallet LANGUAGES CXX)'
-          $txt = $txt -replace 'set\(BINARY_NAME "place_holder"\)', 'set(BINARY_NAME "stack_wallet")'
           $txt = [regex]::Replace($txt, 'set\(INCLUDE_EPIC_SO\s+[^\)]+\)', 'set(INCLUDE_EPIC_SO OFF)')
           $txt = [regex]::Replace($txt, 'set\(INCLUDE_MWC_SO\s+[^\)]+\)', 'set(INCLUDE_MWC_SO OFF)')
-
           Set-Content $cm $txt
-          Write-Host "Normalized CMake placeholders and install flags."
 
       - name: Flutter pub get
         run: flutter pub get
@@ -135,8 +143,7 @@ jobs:
       - name: Sanitize generated Windows plugins
         shell: pwsh
         run: |
-          $blocked = "flutter_mwebd|sqlite3_flutter_libs|frostdart"
-
+          $blocked = "flutter_mwebd|frostdart"
           $files = @(
             "windows/flutter/generated_plugins.cmake",
             "windows/flutter/generated_plugin_registrant.cc",
@@ -148,7 +155,6 @@ jobs:
               $lines = Get-Content $f
               $lines = $lines | Where-Object { $_ -notmatch $blocked }
               Set-Content $f $lines
-              Write-Host "Sanitized $f"
             }
           }
 

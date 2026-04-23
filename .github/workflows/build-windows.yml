@@ -138,33 +138,53 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      # coinlib checks secp at configure/runtime; keep a root copy too
-      - name: Build secp256k1.dll (Windows)
-        shell: cmd
+      # Build secp non-interactively (no xcopy prompts).
+      - name: Build secp256k1.dll (Windows, non-interactive)
+        shell: pwsh
         run: |
-          call scripts\windows\build_secp256k1.bat
-          if not exist "build\secp256k1.dll" ( echo build\secp256k1.dll missing & exit 1 )
-          copy /Y "build\secp256k1.dll" "secp256k1.dll"
-          if not exist "secp256k1.dll" ( echo secp256k1.dll copy to repo root failed & exit 1 )
+          $ErrorActionPreference = "Stop"
+
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          Push-Location build
+
+          if (-not (Test-Path "secp256k1")) {
+            git clone https://github.com/bitcoin-core/secp256k1
+          }
+
+          Push-Location secp256k1
+          git checkout 68b55209f1ba3e6c0417789598f5f75649e9c14c
+          git reset --hard
+
+          cmake -G "Visual Studio 17 2022" -A x64 -S . -B build
+          cmake --build build --config Debug
+
+          $dll = Join-Path (Get-Location) "build/bin/Debug/libsecp256k1-2.dll"
+          if (-not (Test-Path $dll)) { throw "libsecp256k1-2.dll not found: $dll" }
+
+          Pop-Location # back to build/
+          Copy-Item $dll "..\build\secp256k1.dll" -Force
+          Copy-Item $dll "..\secp256k1.dll" -Force
+          Pop-Location # back to repo root
+
+          if (-not (Test-Path "build/secp256k1.dll")) { throw "build/secp256k1.dll missing" }
+          if (-not (Test-Path "secp256k1.dll")) { throw "secp256k1.dll in repo root missing" }
 
       - name: Build Windows release (verbose)
         run: flutter build windows --release -v
 
-      # IMPORTANT: copy secp into FINAL release output after flutter build
+      # CRITICAL: put secp into final Release after flutter build.
       - name: Copy secp256k1.dll to final Release
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           $release = "build/windows/x64/runner/Release"
           if (-not (Test-Path $release)) { $release = "build/windows/runner/Release" }
           if (-not (Test-Path $release)) { throw "Release directory not found" }
 
-          if (Test-Path "build/secp256k1.dll") {
-            Copy-Item "build/secp256k1.dll" (Join-Path $release "secp256k1.dll") -Force
-          } elseif (Test-Path "secp256k1.dll") {
-            Copy-Item "secp256k1.dll" (Join-Path $release "secp256k1.dll") -Force
-          } else {
-            throw "No secp256k1.dll source found in build/ or repo root"
-          }
+          if (-not (Test-Path "build/secp256k1.dll")) { throw "build/secp256k1.dll not found" }
+
+          Copy-Item "build/secp256k1.dll" (Join-Path $release "secp256k1.dll") -Force
 
           if (!(Test-Path (Join-Path $release "secp256k1.dll"))) {
             throw "secp256k1.dll missing in final Release after copy"
@@ -173,6 +193,8 @@ jobs:
       - name: Verify release output
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           $release = "build/windows/x64/runner/Release"
           if (-not (Test-Path $release)) { $release = "build/windows/runner/Release" }
           if (-not (Test-Path $release)) { throw "Release directory missing" }
@@ -183,16 +205,10 @@ jobs:
             throw "No .exe found in Release"
           }
 
-          if (!(Test-Path (Join-Path $release "flutter_windows.dll"))) {
-            throw "flutter_windows.dll missing in Release"
-          }
-
-          if (!(Test-Path (Join-Path $release "secp256k1.dll"))) {
-            throw "secp256k1.dll missing in Release"
-          }
-
-          if (!(Test-Path (Join-Path $release "xelis_flutter.dll"))) {
-            throw "xelis_flutter.dll missing in Release"
+          foreach ($f in @("flutter_windows.dll","secp256k1.dll","xelis_flutter.dll")) {
+            if (!(Test-Path (Join-Path $release $f))) {
+              throw "$f missing in Release"
+            }
           }
 
           $assetsDir = Join-Path $release "data\flutter_assets"
@@ -200,13 +216,11 @@ jobs:
             throw "flutter_assets directory missing"
           }
 
-          $assetManifestJson = Join-Path $assetsDir "AssetManifest.json"
-          $assetManifestBin = Join-Path $assetsDir "AssetManifest.bin"
-          $assetManifestBinJson = Join-Path $assetsDir "AssetManifest.bin.json"
-
-          if (!(Test-Path $assetManifestJson) -and !(Test-Path $assetManifestBin) -and !(Test-Path $assetManifestBinJson)) {
-            throw "No AssetManifest found (json/bin/bin.json)"
+          $hasManifest = $false
+          foreach ($m in @("AssetManifest.json","AssetManifest.bin","AssetManifest.bin.json")) {
+            if (Test-Path (Join-Path $assetsDir $m)) { $hasManifest = $true }
           }
+          if (-not $hasManifest) { throw "No AssetManifest found" }
 
           Write-Host "Built EXE: $($exe.Name)"
           Get-ChildItem $release -Force
@@ -227,4 +241,4 @@ jobs:
       - name: Runtime note
         shell: pwsh
         run: |
-          Write-Host "If target machine still throws secp256k1 load error 126, install Microsoft VC++ Redistributable x64 (2015-2022) and run exe from unpacked folder with all DLLs/data present."
+          Write-Host "If target machine still throws secp256k1 load error 126, install Microsoft VC++ Redistributable x64 (2015-2022) and run exe from unpacked folder with all DLLs/data."

@@ -1,15 +1,12 @@
-# Staging + PRs 1295/1296/1298/1299 → Windows zip artifact.
-# secp256k1.dll is copied into Release ONLY AFTER `flutter build` (final folder).
-# End-users on a clean PC may need VC++ 2015–2022 x64 to load MSVC-built secp256k1.dll.
-name: Windows build (staging + PRs 1295/1296/1298/1299)
+name: Build Windows (staging + PR1295/1296/1298/1299)
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [ main ]
 
 concurrency:
-  group: windows-build-staging-prs
+  group: windows-staging-prs-build
   cancel-in-progress: true
 
 jobs:
@@ -30,17 +27,22 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git fetch origin pull/1295/head:pr-1295
           git fetch origin pull/1296/head:pr-1296
           git fetch origin pull/1298/head:pr-1298
           git fetch origin pull/1299/head:pr-1299
+
           git checkout -b build/staging-pr1295-1296-1298-1299
+
           git merge --no-ff --no-edit pr-1295
           git merge --no-ff --no-edit pr-1296
           git merge --no-ff --no-edit pr-1298
           git merge --no-ff --no-edit pr-1299
+
           git log --oneline -n 10
 
       - name: Setup Flutter
@@ -70,14 +72,19 @@ jobs:
           set -euxo pipefail
           source scripts/env.sh
           export BUILD_ISAR_FROM_SOURCE=0
+
           (cd scripts && bash prebuild.sh)
           source scripts/app_config/templates/configure_template_files.sh
           bash scripts/app_config/shared/update_version.sh -v 2.1.0 -b 1295129612981299
           bash scripts/app_config/configure_stack_wallet.sh
+
+          # Disable MWEBD in CI via pubspec only
           sed -i 's/^[[:space:]]*flutter_mwebd:/#  flutter_mwebd:/' pubspec.yaml
           if grep -Eq '^[[:space:]]*flutter_mwebd:' pubspec.yaml; then
             echo "flutter_mwebd is still enabled"; exit 1
           fi
+
+          # Regenerate interfaces without MWEBD
           dart tool/gen_interfaces.dart \
             tool/wl_templates \
             lib/wl_gen/generated \
@@ -88,10 +95,12 @@ jobs:
         run: |
           set -euxo pipefail
           COMMIT="$(git log -1 --pretty=format:%H)"
+
           cp crypto_plugins/flutter_libepiccash/lib/git_versions_example.dart \
              crypto_plugins/flutter_libepiccash/lib/git_versions.dart
           cp crypto_plugins/flutter_libmwc/lib/git_versions_example.dart \
              crypto_plugins/flutter_libmwc/lib/git_versions.dart
+
           sed -i "s|/\\*WINDOWS_VERSION\\*/ const WINDOWS_VERSION = \"\"|/\\*WINDOWS_VERSION\\*/ const WINDOWS_VERSION = \"${COMMIT}\"|" \
             crypto_plugins/flutter_libepiccash/lib/git_versions.dart
           sed -i "s|/\\*WINDOWS_VERSION\\*/ const WINDOWS_VERSION = \"\"|/\\*WINDOWS_VERSION\\*/ const WINDOWS_VERSION = \"${COMMIT}\"|" \
@@ -108,9 +117,11 @@ jobs:
             if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
             Copy-Item $src $dst -Recurse -Force
           }
-          if (!(Test-Path "assets/lottie/loader.json")) { throw "Missing assets/lottie/loader.json after copy" }
+          if (!(Test-Path "assets/lottie/loader.json")) {
+            throw "Missing assets/lottie/loader.json after copy"
+          }
 
-      - name: Normalize Windows CMake flags (no Epic/MWC SO)
+      - name: Normalize Windows CMake flags
         shell: pwsh
         run: |
           $cm = "windows/CMakeLists.txt"
@@ -127,65 +138,85 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      - name: Build secp256k1 (MSVC) and root copy for coinlib
+      # coinlib checks secp at configure/runtime; keep a root copy too
+      - name: Build secp256k1.dll (Windows)
         shell: cmd
         run: |
           call scripts\windows\build_secp256k1.bat
           if not exist "build\secp256k1.dll" ( echo build\secp256k1.dll missing & exit 1 )
           copy /Y "build\secp256k1.dll" "secp256k1.dll"
-          if not exist "secp256k1.dll" ( echo secp256k1.dll in repo root missing & exit 1 )
+          if not exist "secp256k1.dll" ( echo secp256k1.dll copy to repo root failed & exit 1 )
 
-      - name: Build Windows release
+      - name: Build Windows release (verbose)
         run: flutter build windows --release -v
 
-      - name: Install secp256k1.dll into final Release (after flutter build)
+      # IMPORTANT: copy secp into FINAL release output after flutter build
+      - name: Copy secp256k1.dll to final Release
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $rel = "build/windows/x64/runner/Release"
-          if (-not (Test-Path $rel)) { $rel = "build/windows/runner/Release" }
-          if (-not (Test-Path $rel)) { throw "Release directory not found under build/windows" }
-          $src = $null
-          if (Test-Path "build/secp256k1.dll") { $src = (Resolve-Path "build/secp256k1.dll").Path }
-          elseif (Test-Path "secp256k1.dll") { $src = (Resolve-Path "secp256k1.dll").Path }
-          else {
-            $f = Get-ChildItem "scripts/windows/build" -Recurse -Filter "libsecp256k1-2.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($f) { $src = $f.FullName }
+          $release = "build/windows/x64/runner/Release"
+          if (-not (Test-Path $release)) { $release = "build/windows/runner/Release" }
+          if (-not (Test-Path $release)) { throw "Release directory not found" }
+
+          if (Test-Path "build/secp256k1.dll") {
+            Copy-Item "build/secp256k1.dll" (Join-Path $release "secp256k1.dll") -Force
+          } elseif (Test-Path "secp256k1.dll") {
+            Copy-Item "secp256k1.dll" (Join-Path $release "secp256k1.dll") -Force
+          } else {
+            throw "No secp256k1.dll source found in build/ or repo root"
           }
-          if (-not $src) { throw "secp source DLL not found" }
-          Write-Host "Copying secp from: $src"
-          Copy-Item -LiteralPath $src -Destination (Join-Path $rel "secp256k1.dll") -Force
-          Get-Item (Join-Path $rel "secp256k1.dll") | Format-List Name,Length,LastWriteTime
+
+          if (!(Test-Path (Join-Path $release "secp256k1.dll"))) {
+            throw "secp256k1.dll missing in final Release after copy"
+          }
 
       - name: Verify release output
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $rel = "build/windows/x64/runner/Release"
-          if (-not (Test-Path $rel)) { $rel = "build/windows/runner/Release" }
-          if (-not (Test-Path $rel)) { throw "Release directory missing" }
-          $exe = Get-ChildItem $rel -Filter "*.exe" | Select-Object -First 1
-          if (-not $exe) { Get-ChildItem $rel -Force; throw "No .exe in Release" }
-          foreach ($req in @("flutter_windows.dll","secp256k1.dll","xelis_flutter.dll")) {
-            if (!(Test-Path (Join-Path $rel $req))) { throw "Missing $req" }
+          $release = "build/windows/x64/runner/Release"
+          if (-not (Test-Path $release)) { $release = "build/windows/runner/Release" }
+          if (-not (Test-Path $release)) { throw "Release directory missing" }
+
+          $exe = Get-ChildItem $release -Filter "*.exe" | Select-Object -First 1
+          if (-not $exe) {
+            Get-ChildItem $release -Force
+            throw "No .exe found in Release"
           }
-          $assetsDir = Join-Path $rel "data\flutter_assets"
-          if (!(Test-Path $assetsDir)) { throw "flutter_assets directory missing" }
-          $ok = $false
-          foreach ($n in "AssetManifest.json","AssetManifest.bin","AssetManifest.bin.json") {
-            if (Test-Path (Join-Path $assetsDir $n)) { $ok = $true }
+
+          if (!(Test-Path (Join-Path $release "flutter_windows.dll"))) {
+            throw "flutter_windows.dll missing in Release"
           }
-          if (-not $ok) { throw "No AssetManifest" }
+
+          if (!(Test-Path (Join-Path $release "secp256k1.dll"))) {
+            throw "secp256k1.dll missing in Release"
+          }
+
+          if (!(Test-Path (Join-Path $release "xelis_flutter.dll"))) {
+            throw "xelis_flutter.dll missing in Release"
+          }
+
+          $assetsDir = Join-Path $release "data\flutter_assets"
+          if (!(Test-Path $assetsDir)) {
+            throw "flutter_assets directory missing"
+          }
+
+          $assetManifestJson = Join-Path $assetsDir "AssetManifest.json"
+          $assetManifestBin = Join-Path $assetsDir "AssetManifest.bin"
+          $assetManifestBinJson = Join-Path $assetsDir "AssetManifest.bin.json"
+
+          if (!(Test-Path $assetManifestJson) -and !(Test-Path $assetManifestBin) -and !(Test-Path $assetManifestBinJson)) {
+            throw "No AssetManifest found (json/bin/bin.json)"
+          }
+
           Write-Host "Built EXE: $($exe.Name)"
-          Get-ChildItem $rel -Force
+          Get-ChildItem $release -Force
 
       - name: Zip release
         shell: pwsh
         run: |
-          $rel = "build/windows/x64/runner/Release"
-          if (-not (Test-Path $rel)) { $rel = "build/windows/runner/Release" }
-          Compress-Archive -Path (Join-Path $rel '*') -DestinationPath windows_build.zip -Force
-          Get-Item windows_build.zip | Format-List Name,Length
+          $release = "build/windows/x64/runner/Release"
+          if (-not (Test-Path $release)) { $release = "build/windows/runner/Release" }
+          Compress-Archive -Path (Join-Path $release "*") -DestinationPath windows_build.zip -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -193,6 +224,7 @@ jobs:
           name: windows_build_staging_pr1295_1296_1298_1299
           path: windows_build.zip
 
-      - name: Post-run notice
+      - name: Runtime note
+        shell: pwsh
         run: |
-          echo "Unpack the full zip, install Microsoft VC++ Redistributable x64 (2015-2022) on the target PC if needed, run the exe from the unpacked folder with all DLLs and data/ beside it."
+          Write-Host "If target machine still throws secp256k1 load error 126, install Microsoft VC++ Redistributable x64 (2015-2022) and run exe from unpacked folder with all DLLs/data present."

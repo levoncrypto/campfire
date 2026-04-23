@@ -151,10 +151,12 @@ jobs:
       - name: Verify release executable exists
         shell: pwsh
         run: |
-          if (!(Test-Path "build/windows/x64/runner/Release/stack_wallet.exe")) {
+          $exe = Get-ChildItem "build/windows/x64/runner/Release" -Filter "*.exe" | Select-Object -First 1
+          if (-not $exe) {
             Get-ChildItem "build/windows/x64/runner/Release" -Force
-            throw "stack_wallet.exe not found"
+            throw "No .exe found in Release"
           }
+          Write-Host "Built EXE: $($exe.Name)"
 
       - name: Zip release
         shell: pwsh

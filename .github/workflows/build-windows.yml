@@ -1,12 +1,12 @@
-# Staging + merge PRs 1295/1296/1298/1299 → Windows release zip.
-# secp256k1.dll is installed into Release ONLY AFTER flutter build.
-# End-users may need VC++ 2015–2022 x64 to load secp (MSVC) on a clean Windows.
+# Staging + PRs 1295/1296/1298/1299 → Windows zip artifact.
+# secp256k1.dll is copied into Release ONLY AFTER `flutter build` (final folder).
+# End-users on a clean PC may need VC++ 2015–2022 x64 to load MSVC-built secp256k1.dll.
 name: Windows build (staging + PRs 1295/1296/1298/1299)
 
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [main]
 
 concurrency:
   group: windows-build-staging-prs
@@ -127,7 +127,7 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      - name: Build secp256k1 (MSVC) and root copies for coinlib
+      - name: Build secp256k1 (MSVC) and root copy for coinlib
         shell: cmd
         run: |
           call scripts\windows\build_secp256k1.bat
@@ -163,17 +163,20 @@ jobs:
           $ErrorActionPreference = "Stop"
           $rel = "build/windows/x64/runner/Release"
           if (-not (Test-Path $rel)) { $rel = "build/windows/runner/Release" }
+          if (-not (Test-Path $rel)) { throw "Release directory missing" }
           $exe = Get-ChildItem $rel -Filter "*.exe" | Select-Object -First 1
-          if (-not $exe) { throw "No .exe" }
+          if (-not $exe) { Get-ChildItem $rel -Force; throw "No .exe in Release" }
           foreach ($req in @("flutter_windows.dll","secp256k1.dll","xelis_flutter.dll")) {
             if (!(Test-Path (Join-Path $rel $req))) { throw "Missing $req" }
           }
           $assetsDir = Join-Path $rel "data\flutter_assets"
           if (!(Test-Path $assetsDir)) { throw "flutter_assets directory missing" }
-          $m = $false; foreach ($n in "AssetManifest.json","AssetManifest.bin","AssetManifest.bin.json") {
-            if (Test-Path (Join-Path $assetsDir $n)) { $m = $true }
+          $ok = $false
+          foreach ($n in "AssetManifest.json","AssetManifest.bin","AssetManifest.bin.json") {
+            if (Test-Path (Join-Path $assetsDir $n)) { $ok = $true }
           }
-          if (-not $m) { throw "No AssetManifest" }
+          if (-not $ok) { throw "No AssetManifest" }
+          Write-Host "Built EXE: $($exe.Name)"
           Get-ChildItem $rel -Force
 
       - name: Zip release
@@ -182,10 +185,14 @@ jobs:
           $rel = "build/windows/x64/runner/Release"
           if (-not (Test-Path $rel)) { $rel = "build/windows/runner/Release" }
           Compress-Archive -Path (Join-Path $rel '*') -DestinationPath windows_build.zip -Force
-          Get-Item windows_build.zip
+          Get-Item windows_build.zip | Format-List Name,Length
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows_build_staging_pr1295_1296_1298_1299
           path: windows_build.zip
+
+      - name: Post-run notice
+        run: |
+          echo "Unpack the full zip, install Microsoft VC++ Redistributable x64 (2015-2022) on the target PC if needed, run the exe from the unpacked folder with all DLLs and data/ beside it."

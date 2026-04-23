@@ -24,6 +24,10 @@ jobs:
         run: |
           set -euxo pipefail
 
+          # Required for merge commits in GitHub runner
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git fetch origin pull/1293/head:pr-1293
           git fetch origin pull/1295/head:pr-1295
           git fetch origin pull/1296/head:pr-1296
@@ -73,12 +77,13 @@ jobs:
           bash scripts/app_config/shared/update_version.sh -v 2.1.0 -b 12931295129612981299
           bash scripts/app_config/configure_stack_wallet.sh
 
-          # Disable MWEBD in CI (through config only; do not patch generated windows plugin files)
+          # Disable MWEBD in CI via pubspec only
           sed -i 's/^[[:space:]]*flutter_mwebd:/#  flutter_mwebd:/' pubspec.yaml
           if grep -Eq '^[[:space:]]*flutter_mwebd:' pubspec.yaml; then
             echo "flutter_mwebd is still enabled"; exit 1
           fi
 
+          # Regenerate interfaces without MWEBD
           dart tool/gen_interfaces.dart \
             tool/wl_templates \
             lib/wl_gen/generated \
@@ -154,7 +159,7 @@ jobs:
             throw "stack_wallet.exe not found"
           }
 
-      - name: Zip release folder
+      - name: Zip release
         shell: pwsh
         run: |
           Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath windows_build.zip -Force

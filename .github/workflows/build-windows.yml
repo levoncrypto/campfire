@@ -1,4 +1,4 @@
-name: Build Windows (staging + PR1293/1295/1296/1298/1299)
+name: Build Windows (staging + PR1295/1296/1298/1299)
 
 on:
   workflow_dispatch:
@@ -24,19 +24,16 @@ jobs:
         run: |
           set -euxo pipefail
 
-          # Required for merge commits in GitHub runner
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git fetch origin pull/1293/head:pr-1293
           git fetch origin pull/1295/head:pr-1295
           git fetch origin pull/1296/head:pr-1296
           git fetch origin pull/1298/head:pr-1298
           git fetch origin pull/1299/head:pr-1299
 
-          git checkout -b build/staging-pr1293-1295-1296-1298-1299
+          git checkout -b build/staging-pr1295-1296-1298-1299
 
-          git merge --no-ff --no-edit pr-1293
           git merge --no-ff --no-edit pr-1295
           git merge --no-ff --no-edit pr-1296
           git merge --no-ff --no-edit pr-1298
@@ -74,7 +71,7 @@ jobs:
 
           (cd scripts && bash prebuild.sh)
           source scripts/app_config/templates/configure_template_files.sh
-          bash scripts/app_config/shared/update_version.sh -v 2.1.0 -b 12931295129612981299
+          bash scripts/app_config/shared/update_version.sh -v 2.1.0 -b 1295129612981299
           bash scripts/app_config/configure_stack_wallet.sh
 
           # Disable MWEBD in CI via pubspec only
@@ -167,5 +164,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows_build_staging_pr1293_1295_1296_1298_1299
+          name: windows_build_staging_pr1295_1296_1298_1299
           path: windows_build.zip

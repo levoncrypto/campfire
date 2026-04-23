@@ -138,8 +138,8 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      # Build secp non-interactively (no xcopy prompts).
-      - name: Build secp256k1.dll (Windows, non-interactive)
+      # Build secp in RELEASE mode (not Debug), avoid xcopy prompt.
+      - name: Build secp256k1.dll (Release, non-interactive)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -156,15 +156,15 @@ jobs:
           git reset --hard
 
           cmake -G "Visual Studio 17 2022" -A x64 -S . -B build
-          cmake --build build --config Debug
+          cmake --build build --config Release
 
-          $dll = Join-Path (Get-Location) "build/bin/Debug/libsecp256k1-2.dll"
+          $dll = Join-Path (Get-Location) "build/bin/Release/libsecp256k1-2.dll"
           if (-not (Test-Path $dll)) { throw "libsecp256k1-2.dll not found: $dll" }
 
-          Pop-Location # back to build/
+          Pop-Location # build/
           Copy-Item $dll "..\build\secp256k1.dll" -Force
           Copy-Item $dll "..\secp256k1.dll" -Force
-          Pop-Location # back to repo root
+          Pop-Location # repo root
 
           if (-not (Test-Path "build/secp256k1.dll")) { throw "build/secp256k1.dll missing" }
           if (-not (Test-Path "secp256k1.dll")) { throw "secp256k1.dll in repo root missing" }
@@ -172,7 +172,7 @@ jobs:
       - name: Build Windows release (verbose)
         run: flutter build windows --release -v
 
-      # CRITICAL: put secp into final Release after flutter build.
+      # CRITICAL: install secp into final Release after flutter build.
       - name: Copy secp256k1.dll to final Release
         shell: pwsh
         run: |

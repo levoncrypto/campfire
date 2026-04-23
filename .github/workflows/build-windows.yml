@@ -134,6 +134,8 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
+      # IMPORTANT: build/copy secp256k1 BEFORE flutter build windows,
+      # because coinlib CMake checks for secp256k1.dll at configure time.
       - name: Build secp256k1.dll (Windows)
         shell: pwsh
         run: |
@@ -141,10 +143,16 @@ jobs:
           $dll = Get-ChildItem -Path "scripts/windows/build/secp256k1" -Recurse -Filter "libsecp256k1-2.dll" | Select-Object -First 1
           if (-not $dll) { throw "libsecp256k1-2.dll not found after build" }
 
+          # 1) For CMake/plugin configure-time check
+          Copy-Item $dll.FullName "secp256k1.dll" -Force
+          if (-not (Test-Path "secp256k1.dll")) {
+            throw "secp256k1.dll copy to repo root failed"
+          }
+
+          # 2) For runtime in release folder
           $release = "build/windows/x64/runner/Release"
           New-Item -ItemType Directory -Force -Path $release | Out-Null
           Copy-Item $dll.FullName (Join-Path $release "secp256k1.dll") -Force
-
           if (-not (Test-Path (Join-Path $release "secp256k1.dll"))) {
             throw "secp256k1.dll copy to Release failed"
           }

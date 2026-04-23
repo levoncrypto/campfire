@@ -1,4 +1,4 @@
-name: Build Windows (PR1295 + PR1296)
+name: Build Windows (staging + PR1293/1295/1296/1298/1299)
 
 on:
   workflow_dispatch:
@@ -19,18 +19,26 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Merge PR 1295 and PR 1296
+      - name: Merge PRs onto staging
         shell: bash
         run: |
           set -euxo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin pull/1293/head:pr-1293
           git fetch origin pull/1295/head:pr-1295
           git fetch origin pull/1296/head:pr-1296
-          git checkout -b build/pr1295-pr1296
+          git fetch origin pull/1298/head:pr-1298
+          git fetch origin pull/1299/head:pr-1299
+
+          git checkout -b build/staging-pr1293-1295-1296-1298-1299
+
+          git merge --no-ff --no-edit pr-1293
           git merge --no-ff --no-edit pr-1295
           git merge --no-ff --no-edit pr-1296
-          git log --oneline -n 5
+          git merge --no-ff --no-edit pr-1298
+          git merge --no-ff --no-edit pr-1299
+
+          git log --oneline -n 10
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -53,7 +61,7 @@ jobs:
             sed -i '/frostdart\.dll/d' crypto_plugins/frostdart/windows/CMakeLists.txt
           fi
 
-      - name: Generate Stack Wallet config + required generated files
+      - name: Generate Stack Wallet config + generated files
         shell: bash
         run: |
           set -euxo pipefail
@@ -62,16 +70,15 @@ jobs:
 
           (cd scripts && bash prebuild.sh)
           source scripts/app_config/templates/configure_template_files.sh
-          bash scripts/app_config/shared/update_version.sh -v 2.1.0 -b 12951296
+          bash scripts/app_config/shared/update_version.sh -v 2.1.0 -b 12931295129612981299
           bash scripts/app_config/configure_stack_wallet.sh
 
-          # Disable MWEBD in CI to avoid unrelated Windows blockers.
+          # Disable MWEBD in CI (through config only; do not patch generated windows plugin files)
           sed -i 's/^[[:space:]]*flutter_mwebd:/#  flutter_mwebd:/' pubspec.yaml
           if grep -Eq '^[[:space:]]*flutter_mwebd:' pubspec.yaml; then
             echo "flutter_mwebd is still enabled"; exit 1
           fi
 
-          # Regenerate interfaces without MWEBD
           dart tool/gen_interfaces.dart \
             tool/wl_templates \
             lib/wl_gen/generated \
@@ -108,64 +115,22 @@ jobs:
             throw "Missing assets/lottie/loader.json after copy"
           }
 
-      - name: Ensure Windows project exists
-        shell: bash
-        run: |
-          set -euxo pipefail
-          flutter config --enable-windows-desktop
-          flutter create --platforms=windows .
-
-      - name: Fix Windows placeholders
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sed -i 's/PlaceHolderName/Stack Wallet/g' windows/runner/Runner.rc
-          sed -i 's/PlaceHolderName/Stack Wallet/g' windows/runner/main.cpp
-          sed -i 's/project(place_holder LANGUAGES CXX)/project(stack_wallet LANGUAGES CXX)/' windows/CMakeLists.txt
-          sed -i 's/set(BINARY_NAME "place_holder")/set(BINARY_NAME "stack_wallet")/' windows/CMakeLists.txt
-
-          if grep -R -nE 'PlaceHolderName|place_holder' windows; then
-            echo "Placeholder(s) still found in windows files"; exit 1
-          fi
-
       - name: Normalize Windows CMake flags
         shell: pwsh
         run: |
           $cm = "windows/CMakeLists.txt"
-          $txt = Get-Content $cm -Raw
-          $txt = [regex]::Replace($txt, 'set\(INCLUDE_EPIC_SO\s+[^\)]+\)', 'set(INCLUDE_EPIC_SO OFF)')
-          $txt = [regex]::Replace($txt, 'set\(INCLUDE_MWC_SO\s+[^\)]+\)', 'set(INCLUDE_MWC_SO OFF)')
-          Set-Content $cm $txt
+          if (Test-Path $cm) {
+            $txt = Get-Content $cm -Raw
+            $txt = [regex]::Replace($txt, 'set\(INCLUDE_EPIC_SO\s+[^\)]+\)', 'set(INCLUDE_EPIC_SO OFF)')
+            $txt = [regex]::Replace($txt, 'set\(INCLUDE_MWC_SO\s+[^\)]+\)', 'set(INCLUDE_MWC_SO OFF)')
+            Set-Content $cm $txt
+          }
+
+      - name: Flutter clean
+        run: flutter clean
 
       - name: Flutter pub get
         run: flutter pub get
-
-      - name: Sanitize generated Windows plugins
-        shell: pwsh
-        run: |
-          $blocked = "flutter_mwebd|frostdart"
-          $files = @(
-            "windows/flutter/generated_plugins.cmake",
-            "windows/flutter/generated_plugin_registrant.cc",
-            "windows/flutter/generated_plugin_registrant.h"
-          )
-
-          foreach ($f in $files) {
-            if (Test-Path $f) {
-              $lines = Get-Content $f
-              $lines = $lines | Where-Object { $_ -notmatch $blocked }
-              Set-Content $f $lines
-            }
-          }
-
-          foreach ($f in $files) {
-            if (Test-Path $f) {
-              $match = Select-String -Path $f -Pattern $blocked
-              if ($match) {
-                throw "Blocked plugin still present in $f"
-              }
-            }
-          }
 
       - name: Build secp256k1.dll (Windows)
         shell: pwsh
@@ -181,7 +146,15 @@ jobs:
       - name: Build Windows release (verbose)
         run: flutter build windows --release -v
 
-      - name: Zip release
+      - name: Verify release executable exists
+        shell: pwsh
+        run: |
+          if (!(Test-Path "build/windows/x64/runner/Release/stack_wallet.exe")) {
+            Get-ChildItem "build/windows/x64/runner/Release" -Force
+            throw "stack_wallet.exe not found"
+          }
+
+      - name: Zip release folder
         shell: pwsh
         run: |
           Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath windows_build.zip -Force
@@ -189,5 +162,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows_build_pr1295_pr1296
+          name: windows_build_staging_pr1293_1295_1296_1298_1299
           path: windows_build.zip

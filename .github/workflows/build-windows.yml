@@ -5,10 +5,6 @@ on:
   push:
     branches: [ main ]
 
-concurrency:
-  group: windows-staging-prs-build
-  cancel-in-progress: true
-
 jobs:
   build:
     runs-on: windows-latest
@@ -121,6 +117,23 @@ jobs:
             throw "Missing assets/lottie/loader.json after copy"
           }
 
+      # IMPORTANT: Ensure app identity is Stack Wallet (not placeholder),
+      # so Windows app-data path matches existing installs.
+      - name: Fix Windows app identity
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          sed -i 's/^project(place_holder LANGUAGES CXX)/project(stack_wallet LANGUAGES CXX)/' windows/CMakeLists.txt
+          sed -i 's/^set(BINARY_NAME "place_holder")/set(BINARY_NAME "stack_wallet")/' windows/CMakeLists.txt
+
+          sed -i 's/CreateAndShow(L"PlaceHolderName"/CreateAndShow(L"Stack Wallet"/' windows/runner/main.cpp
+
+          sed -i 's/"FileDescription", "PlaceHolderName"/"FileDescription", "Stack Wallet"/' windows/runner/Runner.rc
+          sed -i 's/"InternalName", "PlaceHolderName"/"InternalName", "Stack Wallet"/' windows/runner/Runner.rc
+          sed -i 's/"OriginalFilename", "PlaceHolderName.exe"/"OriginalFilename", "stack_wallet.exe"/' windows/runner/Runner.rc
+          sed -i 's/"ProductName", "PlaceHolderName"/"ProductName", "Stack Wallet"/' windows/runner/Runner.rc
+
       - name: Normalize Windows CMake flags
         shell: pwsh
         run: |
@@ -138,77 +151,81 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      # Build secp in RELEASE mode (not Debug), avoid xcopy prompt.
-      - name: Build secp256k1.dll (Release, non-interactive)
+      # coinlib CMake checks secp256k1.dll during configure phase
+      - name: Build secp256k1.dll (Windows)
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
+          cmd /c "cd scripts\windows && build_secp256k1.bat"
+          $dll = Get-ChildItem -Path "scripts/windows/build/secp256k1" -Recurse -Filter "libsecp256k1-2.dll" | Select-Object -First 1
+          if (-not $dll) { throw "libsecp256k1-2.dll not found after build" }
 
-          New-Item -ItemType Directory -Force -Path build | Out-Null
-          Push-Location build
-
-          if (-not (Test-Path "secp256k1")) {
-            git clone https://github.com/bitcoin-core/secp256k1
+          # For CMake/plugin configure-time check
+          Copy-Item $dll.FullName "secp256k1.dll" -Force
+          if (-not (Test-Path "secp256k1.dll")) {
+            throw "secp256k1.dll copy to repo root failed"
           }
 
-          Push-Location secp256k1
-          git checkout 68b55209f1ba3e6c0417789598f5f75649e9c14c
-          git reset --hard
+          # For runtime in release
+          $release = "build/windows/x64/runner/Release"
+          New-Item -ItemType Directory -Force -Path $release | Out-Null
+          Copy-Item $dll.FullName (Join-Path $release "secp256k1.dll") -Force
+          if (-not (Test-Path (Join-Path $release "secp256k1.dll"))) {
+            throw "secp256k1.dll copy to Release failed"
+          }
 
-          cmake -G "Visual Studio 17 2022" -A x64 -S . -B build
-          cmake --build build --config Release
+      - name: Bundle MinGW runtime DLLs for secp256k1
+        shell: pwsh
+        run: |
+          $release = "build/windows/x64/runner/Release"
+          New-Item -ItemType Directory -Force -Path $release | Out-Null
 
-          $dll = Join-Path (Get-Location) "build/bin/Release/libsecp256k1-2.dll"
-          if (-not (Test-Path $dll)) { throw "libsecp256k1-2.dll not found: $dll" }
+          $needed = @("libgcc_s_seh-1.dll","libstdc++-6.dll","libwinpthread-1.dll","libssp-0.dll")
+          $searchDirs = @(
+            "C:\msys64\mingw64\bin",
+            "C:\mingw64\bin",
+            "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin",
+            "C:\Strawberry\c\bin"
+          )
 
-          Pop-Location # build/
-          Copy-Item $dll "..\build\secp256k1.dll" -Force
-          Copy-Item $dll "..\secp256k1.dll" -Force
-          Pop-Location # repo root
-
-          if (-not (Test-Path "build/secp256k1.dll")) { throw "build/secp256k1.dll missing" }
-          if (-not (Test-Path "secp256k1.dll")) { throw "secp256k1.dll in repo root missing" }
+          foreach ($dll in $needed) {
+            $copied = $false
+            foreach ($dir in $searchDirs) {
+              $src = Join-Path $dir $dll
+              if (Test-Path $src) {
+                Copy-Item $src (Join-Path $release $dll) -Force
+                Write-Host "Copied $dll from $dir"
+                $copied = $true
+                break
+              }
+            }
+            if (-not $copied) {
+              Write-Warning "$dll not found in known paths"
+            }
+          }
 
       - name: Build Windows release (verbose)
         run: flutter build windows --release -v
 
-      # CRITICAL: install secp into final Release after flutter build.
-      - name: Copy secp256k1.dll to final Release
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $release = "build/windows/x64/runner/Release"
-          if (-not (Test-Path $release)) { $release = "build/windows/runner/Release" }
-          if (-not (Test-Path $release)) { throw "Release directory not found" }
-
-          if (-not (Test-Path "build/secp256k1.dll")) { throw "build/secp256k1.dll not found" }
-
-          Copy-Item "build/secp256k1.dll" (Join-Path $release "secp256k1.dll") -Force
-
-          if (!(Test-Path (Join-Path $release "secp256k1.dll"))) {
-            throw "secp256k1.dll missing in final Release after copy"
-          }
-
       - name: Verify release output
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-
           $release = "build/windows/x64/runner/Release"
-          if (-not (Test-Path $release)) { $release = "build/windows/runner/Release" }
-          if (-not (Test-Path $release)) { throw "Release directory missing" }
 
-          $exe = Get-ChildItem $release -Filter "*.exe" | Select-Object -First 1
-          if (-not $exe) {
+          if (!(Test-Path (Join-Path $release "stack_wallet.exe"))) {
             Get-ChildItem $release -Force
-            throw "No .exe found in Release"
+            throw "stack_wallet.exe not found in Release"
           }
 
-          foreach ($f in @("flutter_windows.dll","secp256k1.dll","xelis_flutter.dll")) {
-            if (!(Test-Path (Join-Path $release $f))) {
-              throw "$f missing in Release"
-            }
+          if (!(Test-Path (Join-Path $release "flutter_windows.dll"))) {
+            throw "flutter_windows.dll missing in Release"
+          }
+
+          if (!(Test-Path (Join-Path $release "secp256k1.dll"))) {
+            throw "secp256k1.dll missing in Release"
+          }
+
+          if (!(Test-Path (Join-Path $release "xelis_flutter.dll"))) {
+            throw "xelis_flutter.dll missing in Release"
           }
 
           $assetsDir = Join-Path $release "data\flutter_assets"
@@ -216,29 +233,22 @@ jobs:
             throw "flutter_assets directory missing"
           }
 
-          $hasManifest = $false
-          foreach ($m in @("AssetManifest.json","AssetManifest.bin","AssetManifest.bin.json")) {
-            if (Test-Path (Join-Path $assetsDir $m)) { $hasManifest = $true }
+          $assetManifestJson = Join-Path $assetsDir "AssetManifest.json"
+          $assetManifestBin = Join-Path $assetsDir "AssetManifest.bin"
+          $assetManifestBinJson = Join-Path $assetsDir "AssetManifest.bin.json"
+          if (!(Test-Path $assetManifestJson) -and !(Test-Path $assetManifestBin) -and !(Test-Path $assetManifestBinJson)) {
+            throw "No AssetManifest found (json/bin/bin.json)"
           }
-          if (-not $hasManifest) { throw "No AssetManifest found" }
 
-          Write-Host "Built EXE: $($exe.Name)"
           Get-ChildItem $release -Force
 
       - name: Zip release
         shell: pwsh
         run: |
-          $release = "build/windows/x64/runner/Release"
-          if (-not (Test-Path $release)) { $release = "build/windows/runner/Release" }
-          Compress-Archive -Path (Join-Path $release "*") -DestinationPath windows_build.zip -Force
+          Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath windows_build.zip -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows_build_staging_pr1295_1296_1298_1299
           path: windows_build.zip
-
-      - name: Runtime note
-        shell: pwsh
-        run: |
-          Write-Host "If target machine still throws secp256k1 load error 126, install Microsoft VC++ Redistributable x64 (2015-2022) and run exe from unpacked folder with all DLLs/data."

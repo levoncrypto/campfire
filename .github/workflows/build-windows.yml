@@ -152,7 +152,6 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      # cwd .../repo/build/secp256k1: Parent = repo/build, Parent.Parent = repo root (NOT ..\build\)
       - name: Build secp256k1.dll (Release)
         shell: pwsh
         run: |
@@ -172,11 +171,15 @@ jobs:
           cmake -G "Visual Studio 17 2022" -A x64 -S . -B build
           cmake --build build --config Release
 
-          $dll = Join-Path (Get-Location) "build\bin\Release\libsecp256k1-2.dll"
+          $dll = Join-Path (Get-Location).Path "build\bin\Release\libsecp256k1-2.dll"
           if (-not (Test-Path $dll)) { throw "Missing Release DLL: $dll" }
 
-          Copy-Item -LiteralPath $dll -Destination (Join-Path $PWD.Parent.FullName "secp256k1.dll") -Force
-          Copy-Item -LiteralPath $dll -Destination (Join-Path $PWD.Parent.Parent.FullName "secp256k1.dll") -Force
+          $here = (Get-Location).Path
+          $repoBuildDir = Split-Path -Path $here -Parent
+          $repoRootDir = Split-Path -Path $repoBuildDir -Parent
+
+          Copy-Item -LiteralPath $dll -Destination (Join-Path $repoBuildDir "secp256k1.dll") -Force
+          Copy-Item -LiteralPath $dll -Destination (Join-Path $repoRootDir "secp256k1.dll") -Force
 
           Pop-Location
           Pop-Location
@@ -195,6 +198,7 @@ jobs:
           $release = "build/windows/x64/runner/Release"
           if (-not (Test-Path $release)) { $release = "build/windows/runner/Release" }
           if (-not (Test-Path $release)) { throw "Release directory not found" }
+
           if (-not (Test-Path "build/secp256k1.dll")) { throw "build/secp256k1.dll not found" }
 
           Copy-Item "build/secp256k1.dll" (Join-Path $release "secp256k1.dll") -Force

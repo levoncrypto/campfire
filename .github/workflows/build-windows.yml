@@ -3,7 +3,7 @@ name: Build Windows (staging + PR1295/1296/1298/1299)
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [main]
 
 concurrency:
   group: windows-staging-prs-build
@@ -23,10 +23,7 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      # =========================
-      # FIXED: SAFE SEQUENTIAL INTEGRATION
-      # =========================
-      - name: Integrate PRs (no merge conflicts approach)
+      - name: Merge PRs onto staging
         shell: bash
         run: |
           set -euxo pipefail
@@ -34,37 +31,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # -------------------------
-          # PR 1295 (base layer)
-          # -------------------------
           git fetch origin pull/1295/head:pr-1295
-          git checkout pr-1295
-
-          # -------------------------
-          # PR 1296 on top of 1295
-          # -------------------------
           git fetch origin pull/1296/head:pr-1296
-          git checkout pr-1296
-          git rebase pr-1295
-
-          # -------------------------
-          # PR 1298 on top of 1296
-          # -------------------------
           git fetch origin pull/1298/head:pr-1298
-          git checkout pr-1298
-          git rebase pr-1296
-
-          # -------------------------
-          # PR 1299 on top of 1298
-          # -------------------------
           git fetch origin pull/1299/head:pr-1299
-          git checkout pr-1299
-          git rebase pr-1298
 
-          # Final state for build
-          git checkout pr-1299
+          git checkout -b build/staging-pr1295-1296-1298-1299
 
-          echo "=== FINAL COMMIT STATE ==="
+          git merge --no-ff --no-edit pr-1295
+          git merge --no-ff --no-edit pr-1296
+          git merge --no-ff --no-edit pr-1298
+          git merge --no-ff --no-edit pr-1299
+
           git log --oneline -n 10
 
       - name: Setup Flutter
@@ -137,6 +115,9 @@ jobs:
             if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
             Copy-Item $src $dst -Recurse -Force
           }
+          if (!(Test-Path "assets/lottie/loader.json")) {
+            throw "Missing assets/lottie/loader.json after copy"
+          }
 
       - name: Normalize Windows CMake flags
         shell: pwsh
@@ -149,23 +130,14 @@ jobs:
             Set-Content $cm $txt
           }
 
-      - name: Fix Windows app identity
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          sed -i 's/CreateAndShow(L"PlaceHolderName"/CreateAndShow(L"Stack Wallet"/' windows/runner/main.cpp
-          sed -i 's/"FileDescription", "PlaceHolderName"/"FileDescription", "Stack Wallet"/' windows/runner/Runner.rc
-          sed -i 's/"InternalName", "PlaceHolderName"/"InternalName", "Stack Wallet"/' windows/runner/Runner.rc
-          sed -i 's/"ProductName", "PlaceHolderName"/"ProductName", "Stack Wallet"/' windows/runner/Runner.rc
-
       - name: Flutter clean
         run: flutter clean
 
       - name: Flutter pub get
         run: flutter pub get
 
-      - name: Build secp256k1.dll (Release)
+      # From cwd .../repo/build/secp256k1: ..\ = repo/build, ..\..\ = repo root (NOT ..\build\)
+      - name: Build secp256k1.dll (Release, non-interactive)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -184,30 +156,71 @@ jobs:
           cmake -G "Visual Studio 17 2022" -A x64 -S . -B build
           cmake --build build --config Release
 
-          $dll = Join-Path (Get-Location) "build/bin/Release/libsecp256k1-2.dll"
-          Copy-Item $dll "..\build\secp256k1.dll" -Force
-          Copy-Item $dll "..\secp256k1.dll" -Force
+          $dll = Join-Path (Get-Location) "build\bin\Release\libsecp256k1-2.dll"
+          if (-not (Test-Path $dll)) { throw "Missing: $dll" }
+
+          Copy-Item -LiteralPath $dll -Destination (Join-Path $PWD.Parent.FullName "secp256k1.dll") -Force
+          Copy-Item -LiteralPath $dll -Destination (Join-Path $PWD.Parent.Parent.FullName "secp256k1.dll") -Force
 
           Pop-Location
           Pop-Location
 
-      - name: Build Windows release
+          if (-not (Test-Path "build/secp256k1.dll")) { throw "build/secp256k1.dll missing" }
+          if (-not (Test-Path "secp256k1.dll")) { throw "secp256k1.dll missing in repo root" }
+
+      - name: Build Windows release (verbose)
         run: flutter build windows --release -v
 
-      - name: Copy secp256k1.dll
+      - name: Copy secp256k1.dll to final Release
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           $release = "build/windows/x64/runner/Release"
           if (-not (Test-Path $release)) { $release = "build/windows/runner/Release" }
+          if (-not (Test-Path $release)) { throw "Release directory not found" }
+
+          if (-not (Test-Path "build/secp256k1.dll")) { throw "build/secp256k1.dll not found" }
 
           Copy-Item "build/secp256k1.dll" (Join-Path $release "secp256k1.dll") -Force
 
-      - name: Verify release
+          if (!(Test-Path (Join-Path $release "secp256k1.dll"))) {
+            throw "secp256k1.dll missing in final Release after copy"
+          }
+
+      - name: Verify release output
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           $release = "build/windows/x64/runner/Release"
           if (-not (Test-Path $release)) { $release = "build/windows/runner/Release" }
+          if (-not (Test-Path $release)) { throw "Release directory missing" }
 
+          $exe = Get-ChildItem $release -Filter "*.exe" | Select-Object -First 1
+          if (-not $exe) {
+            Get-ChildItem $release -Force
+            throw "No .exe found in Release"
+          }
+
+          foreach ($f in @("flutter_windows.dll","secp256k1.dll","xelis_flutter.dll")) {
+            if (!(Test-Path (Join-Path $release $f))) {
+              throw "$f missing in Release"
+            }
+          }
+
+          $assetsDir = Join-Path $release "data\flutter_assets"
+          if (!(Test-Path $assetsDir)) {
+            throw "flutter_assets directory missing"
+          }
+
+          $hasManifest = $false
+          foreach ($m in @("AssetManifest.json","AssetManifest.bin","AssetManifest.bin.json")) {
+            if (Test-Path (Join-Path $assetsDir $m)) { $hasManifest = $true }
+          }
+          if (-not $hasManifest) { throw "No AssetManifest found" }
+
+          Write-Host "Built EXE: $($exe.Name)"
           Get-ChildItem $release -Force
 
       - name: Zip release
@@ -220,5 +233,10 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows_build_staging_combined_prs
+          name: windows_build_staging_pr1295_1296_1298_1299
           path: windows_build.zip
+
+      - name: Runtime note
+        shell: pwsh
+        run: |
+          Write-Host "If target PC still hits secp256k1 load error 126, install Microsoft VC++ Redistributable x64 (2015–2022) and run exe from unpacked folder with all DLLs/data."
